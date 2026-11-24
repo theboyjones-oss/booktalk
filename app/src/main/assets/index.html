@@ -157,6 +157,7 @@ a{color:var(--ac2)}
   <section class="view" id="v-book">
     <header class="top">
       <button class="iconbtn" data-act="back"><svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg></button>
+      <button class="iconbtn" data-act="home" title="Home"><svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg></button>
       <div class="grow"></div>
       <button class="iconbtn" id="bkDelete" title="Delete"><svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg></button>
     </header>
@@ -197,6 +198,7 @@ a{color:var(--ac2)}
   <div class="ph">
     <button class="iconbtn" id="plClose"><svg viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg></button>
     <div class="tt"><div style="font-weight:650" id="plTitle"></div><div class="small muted" id="plChap"></div></div>
+    <button class="iconbtn" id="plHome" title="Home"><svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg></button>
     <button class="iconbtn" id="plChapters"><svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3zm0 4h2v-2H3zm0-8h2V7H3zm4 4h14v-2H7zm0 4h14v-2H7zM7 7v2h14V7z"/></svg></button>
   </div>
   <div id="reader"></div>
@@ -1308,7 +1310,8 @@ window.BT = {
 };
 
 $$('nav.tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
-document.addEventListener('click', e => { const a = e.target.closest('[data-act=back]'); if (a) BT.back(); });
+document.addEventListener('click', e => { const a = e.target.closest('[data-act=back]'); if (a) BT.back(); if (e.target.closest('[data-act=home]')) goHome(); });
+function goHome() { closeSheet(); showPlayer(false); setTab('library'); }
 
 /* ---------------- UI: library ---------------- */
 function hue(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
@@ -1480,6 +1483,7 @@ $('#cPlay').onclick = () => P.toggle();
 $('#miniPlay').onclick = () => P.toggle();
 $('#miniOpen').onclick = () => showPlayer(true);
 $('#plClose').onclick = () => showPlayer(false);
+$('#plHome').onclick = goHome;
 $('#cNext').onclick = () => P.jump(P.u + 1);
 $('#cPrev').onclick = () => P.jump(P.u - 1);
 $('#cNextCh').onclick = () => P.nextChapter(false);
