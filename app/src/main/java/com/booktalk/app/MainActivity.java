@@ -84,8 +84,8 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         speaker = new Speaker(this, this);
         cache = new AudioCache(this);
         kokoro = new KokoroEngine(this, cache, speaker, new KokoroEngine.Events() {
-            @Override public void install(String stage, int pct, String msg) {
-                try { emit(new JSONObject().put("type", "kokinst").put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
+            @Override public void install(String pack, String stage, int pct, String msg) {
+                try { emit(new JSONObject().put("type", "kokinst").put("pack", pack).put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
             }
             @Override public void prepared(String reqId, boolean ok, String msg) {
                 try { emit(new JSONObject().put("type", "kokprep").put("reqId", reqId).put("ok", ok).put("msg", msg)); } catch (JSONException ignored) { }
@@ -354,6 +354,40 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         @JavascriptInterface
         public void kokoroCancel() { kokoro.cancelAll(); }
+
+        // ---- Offline voice cloning (Pocket TTS) ----
+        @JavascriptInterface
+        public boolean packInstalled(String pack) { return kokoro.installed(pack); }
+
+        @JavascriptInterface
+        public boolean packInstalling(String pack) { return kokoro.isInstalling(pack); }
+
+        @JavascriptInterface
+        public void packInstall(String pack) { kokoro.install(pack); }
+
+        @JavascriptInterface
+        public void packUninstall(String pack) { kokoro.uninstall(pack); }
+
+        @JavascriptInterface
+        public boolean voiceSave(String id, String wavB64) {
+            try { kokoro.saveVoice(id, Base64.decode(wavB64, Base64.DEFAULT)); return true; } catch (Exception e) { return false; }
+        }
+
+        @JavascriptInterface
+        public void voiceDelete(String id) { kokoro.deleteVoice(id); }
+
+        @JavascriptInterface
+        public boolean voiceHas(String id) { return kokoro.hasVoice(id); }
+
+        @JavascriptInterface
+        public void clonePlay(String id, String key, String text, String voice, double speed, int pauseMs) {
+            kokoro.play(id, key, text, 0, voice, (float) speed, pauseMs);
+        }
+
+        @JavascriptInterface
+        public void clonePrepare(String key, String text, String voice) {
+            kokoro.prepare(null, key, text, 0, voice);
+        }
 
         @JavascriptInterface
         public int kokoroPending() { return kokoro.pending(); }

@@ -1172,11 +1172,25 @@ const Kok = {
   sidFor(mood) { return mood && mood.kokVoice != null && mood.kokVoice !== '' ? +mood.kokVoice : +S.kokVoice; },
   key(text, sid) { return 'kok|' + hashText(text) + '|' + sid; },
   onInstall(ev) {
+    if (ev.pack === 'pocket') {
+      Pocket.inst = ev;
+      if (ev.stage === 'done') { Pocket.refresh(); toast('Voice cloning is ready'); }
+      if (ev.stage === 'error') toast('Download failed: ' + (ev.msg || ''), 5000);
+      $$('.pocketInst').forEach(el => renderPocketInstall(el));
+      Pocket.onReady?.();
+      return;
+    }
     this.inst = ev;
     if (ev.stage === 'done') { this.refresh(); toast('Kokoro voices are ready'); }
     if (ev.stage === 'error') toast('Kokoro download failed: ' + (ev.msg || ''), 5000);
     const el = $('#kokInst'); if (el) renderKokInstall(el);
   },
+};
+
+const Pocket = {
+  ready: false, inst: null,
+  refresh() { this.ready = !!(NATIVE && NATIVE.packInstalled && NATIVE.packInstalled('pocket')); return this.ready; },
+  key(text, voice) { return 'clone|' + hashText(text) + '|' + voice; },
 };
 
 /* ---------------- Player ---------------- */
@@ -1266,9 +1280,11 @@ const P = {
   narrator() { const id = this.meta?.narrator; return id ? CLONES.find(c => c.id === id) || null : null; },
   // Which engine to try first right now: 'fish' (your own voice), 'gemini' or 'system'
   engine() {
+    const nar = this.narrator();
+    if (nar && nar.local && Pocket.ready) return 'clone';          // your voice, made on this phone (works offline)
     if (S.engine === 'system' || !navigator.onLine) return 'system';
     const now = Date.now();
-    if (this.narrator() && S.fishKey && now >= this.fishOffUntil) return 'fish';
+    if (nar && !nar.local && S.fishKey && now >= this.fishOffUntil) return 'fish';
     if (S.apiKey && now >= this.gemOffUntil && Gem.available()) return 'gemini';
     return 'system';
   },
@@ -1325,6 +1341,16 @@ const P = {
     if (unit.scene) { this.curId = 'u' + tok; Out.silence(this.curId, 1000); return; }
     const m = this.mood, speed = S.speed;
     const pauseMs = unit.head ? 650 : 0;
+    if (this.engine() === 'clone') {
+      const v = this.narrator().id, k = Pocket.key(unit.text, v);
+      this.curId = 'u' + tok;
+      Sync.prepare(unit, this.curId, clamp(m.pace * speed, 0.5, 2.5));
+      setEngineChip(NATIVE.cacheHas(k) ? 'clone' : 'loading');
+      NATIVE.clonePlay(this.curId, k, unit.text, v, clamp(m.pace * speed, 0.5, 2.5), unit.head ? 650 : 120);
+      this.lastEngine = 'clone';
+      this.cloneAhead(S.prefetch + 1);
+      return;
+    }
     for (let tries = 0; tries < 3; tries++) {
       const eng = this.engine();
       if (eng === 'system') break;
@@ -1367,6 +1393,19 @@ const P = {
     setEngineChip('system');
     if (this.lastEngine && this.lastEngine !== 'system') toast('Switched to the built-in voice');
     this.lastEngine = 'system';
+  },
+  cloneAhead(n, wholeChapter) {
+    const nar = this.narrator(); if (!nar || !nar.local || !Pocket.ready) return 0;
+    const inc = this.included();
+    let ch = this.ch, u = this.u, count = 0;
+    while (wholeChapter || count < n) {
+      u++;
+      if (u >= this.unitsFor(ch).length) { if (wholeChapter) break; const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
+      const unit = this.unitsFor(ch)[u];
+      if (unit.scene) continue;
+      NATIVE.clonePrepare(Pocket.key(unit.text, nar.id), unit.text, nar.id); count++;
+    }
+    return count;
   },
   // Ask Kokoro to prepare upcoming passages in the background
   kokAhead(n, wholeChapter) {
@@ -1503,7 +1542,11 @@ const Preview = {
     if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Preparing…'; }
     this.btn = btn;
     try {
-      if (engine === 'kokoro') {
+      if (engine === 'clone') {
+        if (!Pocket.ready) { toast('Download the voice cloning pack first'); this.done(); return; }
+        const text = mood.sample || SAMPLE;
+        NATIVE.clonePlay(id, Pocket.key(text, mood.clone), text, mood.clone, clamp(mood.pace * S.speed, 0.5, 2.5), 0);
+      } else if (engine === 'kokoro') {
         if (!Kok.ready) { toast('Download the Kokoro voices in Settings first'); this.done(); return; }
         const sid = mood.kokSid != null ? +mood.kokSid : Kok.sidFor(mood), text = mood.sample || SAMPLE;
         NATIVE.kokoroPlay(id, Kok.key(text, sid), text, sid, clamp(mood.pace * S.speed, 0.5, 2.5), 0);
@@ -1788,9 +1831,10 @@ function setEngineChip(state) {
   const label = state === 'loading' ? `<span class="dot l"></span> Preparing voice…`
     : state === 'gemini' ? `<span class="dot g"></span> ${esc(gemShort(Gem.current || Gem.available() || S.ttsModel).replace('Gemini ', ''))} · ${esc(P.mood.voice)}`
     : state === 'fish' ? `<span class="dot g"></span> ${esc(P.narrator()?.name || 'Your voice')}`
+    : state === 'clone' ? `<span class="dot g"></span> ${esc(P.narrator()?.name || 'Your voice')} · on phone`
     : state === 'kokoro' ? `<span class="dot g"></span> Kokoro · ${esc(kokName(Kok.sidFor(P.mood)))}`
     : state === 'system' ? `<span class="dot s"></span> Built-in voice`
-    : eng === 'fish' ? `<span class="dot"></span> ${esc(P.narrator()?.name || 'Your voice')}`
+    : eng === 'fish' || eng === 'clone' ? `<span class="dot"></span> ${esc(P.narrator()?.name || 'Your voice')}`
     : eng === 'gemini' ? `<span class="dot"></span> Gemini · ${esc(P.mood.voice)}`
     : Kok.active() ? `<span class="dot"></span> Kokoro · ${esc(kokName(Kok.sidFor(P.mood)))}` : `<span class="dot"></span> Built-in voice`;
   c.innerHTML = label;
@@ -1861,11 +1905,15 @@ $('#chEngine').onclick = () => {
     <div class="seg" id="engSeg">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Offline only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
     <p class="small muted">${!S.apiKey && !S.fishKey ? 'No Gemini or Fish Audio key yet, so the built-in voice is used. Add one in Settings.' : off ? 'An AI voice is paused after an error and will be retried shortly.' : 'AI voices (your own voice via Fish Audio, or Gemini) need an internet connection. With AI voice + backup, BookTalk drops to the built-in voice if they fail or you go offline.'}</p>
     ${off ? '<button class="btn block" id="engRetry">Retry Gemini now</button>' : ''}
-    ${Kok.active() ? `<div class="card" style="margin-top:14px"><b>Kokoro (on this phone)</b><div class="small muted" style="margin:4px 0 10px">Prepare passages before you need them so playback never waits. Prepared audio is saved.</div>
+    ${P.engine() === 'clone' ? `<div class="card" style="margin-top:14px"><b>${esc(P.narrator().name)} (made on this phone)</b><div class="small muted" style="margin:4px 0 10px">Prepare passages before you need them so playback never waits. Prepared audio is saved.</div>
+      <div class="row"><button class="btn grow" id="clCh">Prepare this chapter</button><button class="btn ghost" id="clStop">Stop</button></div></div>` : ''}
+    ${Kok.active() && P.engine() !== 'clone' ? `<div class="card" style="margin-top:14px"><b>Kokoro (on this phone)</b><div class="small muted" style="margin:4px 0 10px">Prepare passages before you need them so playback never waits. Prepared audio is saved.</div>
       <div class="small muted" id="kokBusy">${Kok.busy ? Kok.busy + ' passages being prepared' : 'Nothing waiting'}</div>
       <div class="row" style="margin-top:10px"><button class="btn grow" id="kokCh">Prepare this chapter</button><button class="btn ghost" id="kokStop">Stop</button></div></div>` : ''}`, sh => {
     $('#kokCh', sh)?.addEventListener('click', () => { const n = P.kokAhead(0, true); toast(n ? `Preparing ${n} passages in the background` : 'This chapter is already prepared'); });
     $('#kokStop', sh)?.addEventListener('click', () => { NATIVE.kokoroCancel(); });
+    $('#clCh', sh)?.addEventListener('click', () => { const n = P.cloneAhead(0, true); toast(n ? `Preparing ${n} passages in the background` : 'This chapter is already prepared'); });
+    $('#clStop', sh)?.addEventListener('click', () => { NATIVE.kokoroCancel(); });
     $$('[data-e]', sh).forEach(b => b.onclick = () => { S.engine = b.dataset.e; saveSettings(); $$('[data-e]', sh).forEach(x => x.classList.toggle('on', x === b)); P.restartUnit(); setEngineChip(''); });
     $('#engRetry', sh)?.addEventListener('click', () => { P.gemOffUntil = 0; P.fishOffUntil = 0; closeSheet(); P.restartUnit(); });
   });
@@ -1882,16 +1930,17 @@ function updateMini() {
 function renderClones() {
   $('#cloneList').innerHTML = CLONES.length ? CLONES.map(c => `
     <div class="card moodcard"><div class="ic">🗣️</div><div class="grow"><b>${esc(c.name)}</b>
-      <div class="st">Cloned voice · added ${new Date(c.added).toLocaleDateString('en-GB')}</div>
+      <div class="st">${c.local ? 'Made on this phone · free & offline' : 'Fish Audio · online'} · added ${new Date(c.added).toLocaleDateString('en-GB')}</div>
       <div class="row" style="margin-top:10px"><button class="btn grow" data-pv="${c.id}">Preview</button><button class="btn ghost" data-del="${c.id}" style="color:var(--bad)">Delete</button></div></div></div>`).join('')
-    : `<p class="small muted" style="margin-top:0">Record or upload 20–30 seconds of someone talking, and BookTalk can read books in that voice. Uses Fish Audio's free voice model.</p>`;
-  $$('[data-pv]').forEach(b => b.onclick = e => Preview.run({ ...moodById('story'), clone: b.dataset.pv }, 'fish', e.currentTarget));
+    : `<p class="small muted" style="margin-top:0">Record or upload 20–30 seconds of someone talking, and BookTalk can read books in that voice, made right on this phone for free, or with Fish Audio online.</p>`;
+  $$('[data-pv]').forEach(b => b.onclick = e => { const c = CLONES.find(x => x.id === b.dataset.pv); Preview.run({ ...moodById('story'), clone: c.id }, c.local ? 'clone' : 'fish', e.currentTarget); });
   $$('[data-del]').forEach(b => b.onclick = () => {
     const c = CLONES.find(x => x.id === b.dataset.del);
-    openSheet(`<h4>Delete “${esc(c.name)}”?</h4><p class="muted">Books using this voice will go back to the mood voice. It's also removed from your Fish Audio account.</p>
+    openSheet(`<h4>Delete “${esc(c.name)}”?</h4><p class="muted">Books using this voice will go back to the mood voice. ${c.local ? 'Its recording is deleted from this phone.' : 'It\'s also removed from your Fish Audio account.'}</p>
       <div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="cdYes">Delete</button></div>`, sh => {
       $('#cdYes', sh).onclick = async () => {
-        CLONES = CLONES.filter(x => x.id !== c.id); saveClones(); Fish.remove(c.id);
+        CLONES = CLONES.filter(x => x.id !== c.id); saveClones();
+        if (c.local) NATIVE?.voiceDelete?.(c.id); else Fish.remove(c.id);
         for (const m of await DB.all('meta')) if (m.narrator === c.id) { m.narrator = ''; await DB.put('meta', m); }
         if (P.meta?.narrator === c.id) { P.meta.narrator = ''; P.clearCache(); renderPlayerMeta(); }
         closeSheet(); renderClones();
@@ -1902,8 +1951,12 @@ function renderClones() {
 const READ_ALOUD = 'On Saturday morning I walked down to the harbour to watch the boats come in. The wind was sharp, the gulls were noisy, and somebody had left a bright red bicycle leaning against the railings. I bought a coffee, sat on the wall, and wondered, not for the first time, why I don\'t do this more often. It\'s funny how the simplest mornings are the ones you remember.';
 function addVoiceSheet() {
   let wav = null, rec = null, chunks = [], timer = null, t0 = 0, url = '';
+  let where = NATIVE && NATIVE.packInstalled ? 'phone' : 'fish';
   openSheet(`<h4>Add a voice</h4>
-    ${S.fishKey ? '' : `<label class="f" style="margin-top:0">Fish Audio API key</label><input id="avKey" type="password" placeholder="Paste your Fish Audio API key"><p class="small muted">Free account and key at <a href="https://fish.audio/app/api-keys/" target="_blank">fish.audio/app/api-keys</a>.</p>`}
+    ${NATIVE && NATIVE.packInstalled ? `<label class="f" style="margin-top:0">Make the voice</label>
+    <div class="seg" id="avWhere"><button data-w="phone" class="on">On this phone · free</button><button data-w="fish">Fish Audio · online</button></div>
+    <div id="avPhone"><p class="small muted">Made and used entirely on this phone: no account, no internet, no limits.</p><div class="pocketInst"></div></div>` : ''}
+    <div id="avFishBox" class="${where === 'fish' ? '' : 'hidden'}">${S.fishKey ? '' : `<label class="f">Fish Audio API key</label><input id="avKey" type="password" placeholder="Paste your Fish Audio API key"><p class="small muted">Free account and key at <a href="https://fish.audio/app/api-keys/" target="_blank">fish.audio/app/api-keys</a>.</p>`}</div>
     <label class="f">Name</label><input id="avName" placeholder="e.g. Me, Mum, Grandad" maxlength="40">
     <label class="f">Sample (20–30 seconds of clear talking, little background noise)</label>
     <div class="row"><button class="btn pri grow" id="avRec">● Record</button><button class="btn grow" id="avFile">Choose file</button></div>
@@ -1914,7 +1967,13 @@ function addVoiceSheet() {
     <label class="row small" style="margin-top:14px;gap:10px;align-items:flex-start"><input type="checkbox" id="avOk" style="width:auto;margin-top:2px"><span>This is my voice, or the person has agreed to me using their voice.</span></label>
     <button class="btn pri block" id="avCreate" style="margin-top:14px" disabled>Create voice</button>`, sh => {
     const st = $('#avStatus', sh), au = $('#avAudio', sh), ok = $('#avOk', sh), cr = $('#avCreate', sh);
-    const ready = () => cr.disabled = !(wav && ok.checked && $('#avName', sh).value.trim());
+    const ready = () => cr.disabled = !(wav && ok.checked && $('#avName', sh).value.trim() && (where !== 'phone' || Pocket.refresh()));
+    Pocket.onReady = ready;
+    $$('.pocketInst', sh).forEach(el => renderPocketInstall(el, ready));
+    $$('#avWhere [data-w]', sh).forEach(b => b.onclick = () => {
+      where = b.dataset.w; $$('#avWhere [data-w]', sh).forEach(x => x.classList.toggle('on', x === b));
+      $('#avPhone', sh).classList.toggle('hidden', where !== 'phone'); $('#avFishBox', sh).classList.toggle('hidden', where !== 'fish'); ready();
+    });
     ok.onchange = ready; $('#avName', sh).oninput = ready;
     const take = async blob => {
       st.textContent = 'Processing…';
@@ -1943,6 +2002,13 @@ function addVoiceSheet() {
       } catch (e) { st.textContent = 'Microphone not available: ' + (e.message || e) + '. You can choose an audio file instead.'; }
     };
     cr.onclick = async () => {
+      if (where === 'phone') {
+        const name = $('#avName', sh).value.trim(), id = 'loc_' + uid();
+        if (!NATIVE.voiceSave(id, await blobToB64(wav))) { st.textContent = 'Couldn\'t save the recording on this phone.'; return; }
+        CLONES.push({ id, name, added: Date.now(), local: true }); saveClones();
+        closeSheet(); renderClones(); toast(`“${name}” is ready. Pick it as the narrator on any book.`, 4000);
+        return;
+      }
       const k = $('#avKey', sh); if (k) { if (!k.value.trim()) { toast('Paste your Fish Audio key first'); return; } S.fishKey = k.value.trim(); saveSettings(); }
       const name = $('#avName', sh).value.trim();
       cr.disabled = true; cr.textContent = 'Creating voice…';
@@ -2005,7 +2071,7 @@ function editMood(id, isNew) {
     $$('[data-add]', sh).forEach(b => b.onclick = () => { const ta = $('#mdStyle', sh); ta.value = (ta.value.trim().replace(/[.,]$/, '') + (ta.value.trim() ? ', ' : 'in a ') + b.dataset.add).trim(); });
     $('#pvG', sh).onclick = e => { read(); Preview.run(draft, 'gemini', e.currentTarget); };
     $('#pvS', sh).onclick = e => { read(); Preview.run(draft, Kok.active() ? 'kokoro' : 'system', e.currentTarget); };
-    $$('[data-pvc]', sh).forEach(b => b.onclick = e => { read(); Preview.run({ ...draft, clone: b.dataset.pvc }, 'fish', e.currentTarget); });
+    $$('[data-pvc]', sh).forEach(b => b.onclick = e => { read(); const c = CLONES.find(x => x.id === b.dataset.pvc); Preview.run({ ...draft, clone: c.id }, c.local ? 'clone' : 'fish', e.currentTarget); });
     $('#mdSave', sh).onclick = () => {
       read(); Object.assign(m, draft); saveMoods(); closeSheet(); renderMoods();
       if (P.meta && P.meta.moodId === m.id) { P.clearCache(); renderPlayerMeta(); }
@@ -2016,6 +2082,21 @@ function editMood(id, isNew) {
 }
 
 /* ---------------- UI: settings ---------------- */
+function renderPocketInstall(el, after) {
+  if (!el) return;
+  if (!NATIVE?.packInstalled) { el.innerHTML = ''; return; }
+  if (!Kok.supported()) { el.innerHTML = '<p class="small muted">Voice cloning on the phone needs a 64-bit phone.</p>'; return; }
+  Pocket.refresh();
+  const ev = Pocket.inst, busy = NATIVE.packInstalling('pocket') || (ev && (ev.stage === 'download' || ev.stage === 'extract'));
+  if (Pocket.ready) { el.innerHTML = '<div class="small" style="color:var(--ok)">✓ Voice cloning pack installed</div>'; after?.(); return; }
+  if (busy && ev) {
+    const pct = Math.max(0, ev.pct);
+    el.innerHTML = `<div class="small" style="margin:6px 0">${ev.stage === 'download' ? `Downloading… ${ev.pct >= 0 ? pct + '%' : ''} ${ev.msg ? '(' + ev.msg + ' MB)' : ''}` : `Unpacking… ${pct}%`}</div><div class="prog"><i style="width:${pct}%"></i></div>`;
+    return;
+  }
+  el.innerHTML = `<button class="btn pri block" data-getpocket>Download voice cloning pack (98 MB)</button><p class="small muted" style="margin-bottom:0">One-time download, best on Wi-Fi. Uses about 195 MB of storage.</p>`;
+  el.querySelector('[data-getpocket]').onclick = () => { NATIVE.packInstall('pocket'); Pocket.inst = { pack: 'pocket', stage: 'download', pct: 0 }; $$('.pocketInst').forEach(x => renderPocketInstall(x, after)); };
+}
 function renderKokInstall(el) {
   if (!el) return;
   if (!NATIVE) { el.innerHTML = '<p class="small muted">Kokoro runs inside the Android app.</p>'; return; }
@@ -2086,6 +2167,9 @@ function renderSettings() {
         </div>
       </div>
     </div>
+    ${NATIVE?.packInstalled ? `<h2>Voice cloning on this phone</h2>
+    <div class="card"><p class="small muted" style="margin-top:0">Lets you add your own voices in the Voices tab that are made and used entirely on this phone (Pocket TTS by Kyutai). English only.</p>
+      <div class="pocketInst"></div>${Pocket.refresh() ? '<button class="btn ghost" id="sPocketDel" style="margin-top:10px">Remove pack</button>' : ''}</div>` : ''}
     <h2>Phone's voices</h2>
     <div class="card">
       ${NATIVE ? `<label class="f" style="margin-top:0">Voice app</label>
@@ -2125,6 +2209,10 @@ function renderSettings() {
   $('#sFishShow').onclick = () => { const k = $('#sFish'); k.type = k.type === 'password' ? 'text' : 'password'; };
   $('#sFishModel').onchange = e => { S.fishModel = e.target.value; saveSettings(); P.fishOffUntil = 0; P.clearCache(); };
   renderKokInstall($('#kokInst'));
+  $$('#setBody .pocketInst').forEach(el => renderPocketInstall(el));
+  $('#sPocketDel')?.addEventListener('click', () => openSheet(`<h4>Remove voice cloning pack?</h4><p class="muted">Frees about 195 MB. Your recorded voices stay, and work again when you re-download it.</p><div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="pdYes">Remove</button></div>`, sh => {
+    $('#pdYes', sh).onclick = () => { NATIVE.packUninstall('pocket'); Pocket.refresh(); closeSheet(); renderSettings(); };
+  }));
   $$('#sOff [data-o]').forEach(b => b.onclick = () => {
     S.offline = b.dataset.o; saveSettings(); $$('#sOff [data-o]').forEach(x => x.classList.toggle('on', x === b));
     $('#kokArea').classList.toggle('hidden', S.offline !== 'kokoro'); P.restartUnit();
@@ -2151,7 +2239,7 @@ function renderSettings() {
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
   try { if (navigator.storage?.persist) navigator.storage.persist(); } catch {}
   if (NATIVE && S.sysEngine && NATIVE.setTtsEngine) NATIVE.setTtsEngine(S.sysEngine);
-  Kok.refresh();
+  Kok.refresh(); Pocket.refresh();
   await renderLibrary();
   Out.loadVoices();
   const last = LS.get('lastBook', null);
