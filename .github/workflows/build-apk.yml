@@ -31,7 +31,16 @@ jobs:
           done
           ls -lR app/src/main/jniLibs
       - name: Build debug APK (compile check)
-        run: gradle :app:assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon 2>&1 | tee build.log
+      - name: Publish build errors
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          grep -E "error:|^e: |What went wrong|Execution failed|Caused by|> " build.log | head -60 > errors.txt || true
+          gh release create "build-errors-${{ github.run_number }}" --prerelease --title "Build errors ${{ github.run_number }}" --notes-file errors.txt
       - uses: actions/upload-artifact@v4
         with:
           name: BookTalk-debug-apk
