@@ -1403,7 +1403,7 @@ const P = {
       if (u >= this.unitsFor(ch).length) { if (wholeChapter) break; const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
       const unit = this.unitsFor(ch)[u];
       if (unit.scene) continue;
-      NATIVE.clonePrepare(Pocket.key(unit.text, nar.id), unit.text, nar.id); count++;
+      NATIVE.clonePrepare('', Pocket.key(unit.text, nar.id), unit.text, nar.id); count++;
     }
     return count;
   },
@@ -1517,7 +1517,7 @@ function onNative(ev) {
     case 'gem': Gem.onEvent(ev); break;
     case 'kokinst': Kok.onInstall(ev); break;
     case 'kokbusy': Kok.busy = ev.n; { const b = $('#kokBusy'); if (b) b.textContent = ev.n ? `${ev.n} passage${ev.n > 1 ? 's' : ''} being prepared` : 'Nothing waiting'; } break;
-    case 'kokprep': break;
+    case 'kokprep': case 'export': Maker.onNative(ev); break;
     case 'start': Sync.start(ev.id, ev.dur); if (ev.id === P.curId && P.lastEngine) setEngineChip(P.lastEngine); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
@@ -1566,6 +1566,152 @@ const Preview = {
   },
   done() { if (this.btn) { this.btn.disabled = false; this.btn.textContent = this.btn.dataset.l || 'Preview'; } this.btn = null; this.id = null; },
 };
+
+/* ---------------- Save a whole book as an audiobook ---------------- */
+const Maker = {
+  job: null, pend: new Map(),
+  engines(meta) {
+    const out = [], nar = meta.narrator ? CLONES.find(c => c.id === meta.narrator) : null, mood = moodById(meta.moodId);
+    if (nar && nar.local && Pocket.ready) out.push(['clone', `🗣️ ${nar.name} (made on this phone)`, 'Free, works offline. Speed depends on your phone, so keep it charging.']);
+    if (nar && !nar.local && S.fishKey) out.push(['fish', `🗣️ ${nar.name} (Fish Audio)`, S.fishModel === 's2.1-pro-free' ? 'Uses Fish Audio\'s free model.' : 'Paid by usage on your Fish Audio account.']);
+    if (S.apiKey) out.push(['gemini', `✨ Gemini · ${mood.voice} (${mood.name})`, 'Uses your Gemini allowance. On a free key a whole book can take several days; it pauses when the daily allowance runs out and you can continue later.']);
+    if (Kok.ready) out.push(['kokoro', `🎙️ Kokoro · ${kokName(Kok.sidFor(mood))}`, 'Free, works offline, made on this phone. Keep it charging.']);
+    return out;
+  },
+  plan(meta, content, eng) {
+    const size = eng === 'gemini' && S.gemLong !== false ? GEM_LONG : MAX_UNIT;
+    return meta.include.map((on, i) => on ? i : -1).filter(i => i >= 0)
+      .map((ch, n) => ({ ch, n, title: content.chapters[ch].title, units: buildUnits(content.chapters[ch].paras, size) }));
+  },
+  keyFor(eng, meta, text) {
+    const m = moodById(meta.moodId), th = hashText(text);
+    if (eng === 'gemini') return `gem|${th}|${m.voice}|${m.style}|${meta.note || ''}`;
+    if (eng === 'fish') return `fish|${th}|${meta.narrator}|${m.fishTag || ''}|${S.fishModel}`;
+    if (eng === 'kokoro') return Kok.key(text, Kok.sidFor(m));
+    return Pocket.key(text, meta.narrator);
+  },
+  statusText() { const j = this.job; if (!j) return ''; return j.state === 'paused' ? 'paused · ' + j.pct + '%' : j.state === 'done' ? 'done' : `${j.pct}% · chapter ${j.chNow}/${j.chTotal}`; },
+  async sheet(meta) {
+    const content = await DB.get('content', meta.id);
+    if (this.job && this.job.id === meta.id && this.job.state === 'running') {
+      openSheet(`<h4>Saving as audiobook</h4><div class="small muted" id="mkSt">${esc(this.job.msg || '')}</div><div class="prog" style="margin:12px 0"><i id="mkBar" style="width:${this.job.pct}%"></i></div>
+        <p class="small muted">Chapters are saved to <b>Music/BookTalk/${esc(AudioName(meta.title))}</b> as they finish. You can leave this screen; keep BookTalk open in the background.</p>
+        <button class="btn ghost block" id="mkStop">Stop (you can continue later)</button>`, sh => { $('#mkStop', sh).onclick = () => { this.stop(); closeSheet(); }; });
+      return;
+    }
+    if (this.job && this.job.state === 'running') { toast('Already saving “' + this.job.title + '”. One book at a time.'); return; }
+    const opts = this.engines(meta);
+    if (!opts.length) {
+      openSheet(`<h4>Choose an AI voice first</h4><p class="muted">Audiobooks can be made with Gemini voices, Kokoro voices, or your own cloned voice. Add a Gemini key, download Kokoro in Settings, or add your voice in the Voices tab.</p><button class="btn block" onclick="closeSheet();setTab('settings')">Open Settings</button>`);
+      return;
+    }
+    const saved = LS.get('make.' + meta.id, null);
+    let eng = saved && opts.some(o => o[0] === saved.eng) ? saved.eng : opts[0][0];
+    const words = meta.words, hours = words / 155 / 60;
+    const est = e => {
+      const plan = this.plan(meta, content, e), units = plan.reduce((a, c) => a + c.units.filter(u => !u.scene).length, 0);
+      const done = plan.reduce((a, c) => a + c.units.filter(u => !u.scene && NATIVE.cacheHas(this.keyFor(e, meta, u.text))).length, 0);
+      const chars = plan.reduce((a, c) => a + c.units.reduce((b, u) => b + u.text.length, 0), 0);
+      let cost = '';
+      if (e === 'gemini') cost = `${units - done} Gemini requests`;
+      if (e === 'fish' && S.fishModel !== 's2.1-pro-free') cost = `about $${(chars * 1.05 / 1e6 * 15).toFixed(2)} on Fish Audio`;
+      if (e === 'kokoro' || e === 'clone') cost = 'free, generated on this phone';
+      return `${plan.length} chapters · ${units} passages${done ? ` (${done} already made)` : ''} · about ${hours >= 1 ? hours.toFixed(1) + ' hours' : Math.round(hours * 60) + ' min'} of audio · ${cost}`;
+    };
+    openSheet(`<h4>Save as audiobook</h4>
+      <p class="small muted" style="margin-top:0">Makes the whole book in one voice and saves it as audio files, one per chapter, in <b>Music/BookTalk/${esc(AudioName(meta.title))}</b>. They play in any music or podcast app and can be copied anywhere. It also makes the book instant to listen to here.</p>
+      <label class="f">Voice</label>
+      ${opts.map(([k, label, note]) => `<button class="opt ${k === eng ? 'on' : ''}" data-eng="${k}"><span class="grow"><b>${esc(label)}</b><div class="small muted">${esc(note)}</div></span></button>`).join('')}
+      <div class="card small" id="mkEst" style="margin-top:12px">${esc(est(eng))}</div>
+      <p class="small muted">Uses the book's current mood and pace, and only the sections switched on under “What gets read”.</p>
+      <button class="btn pri block" id="mkGo">${saved ? 'Continue' : 'Start'}</button>`, sh => {
+      $$('[data-eng]', sh).forEach(b => b.onclick = () => { eng = b.dataset.eng; $$('[data-eng]', sh).forEach(x => x.classList.toggle('on', x === b)); $('#mkEst', sh).textContent = est(eng); });
+      $('#mkGo', sh).onclick = () => { closeSheet(); this.run(meta, content, eng); };
+    });
+  },
+  stop() { if (this.job) { this.job.cancel = true; this.job.state = 'paused'; this.job.msg = 'Stopped'; } NATIVE?.kokoroCancel?.(); },
+  call(kind, ...args) {
+    return new Promise((res, rej) => {
+      const id = 'm' + uid();
+      this.pend.set(id, { res, rej });
+      NATIVE[kind](id, ...args);
+    });
+  },
+  onNative(ev) {
+    const p = this.pend.get(ev.reqId); if (!p) return;
+    this.pend.delete(ev.reqId);
+    ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
+  },
+  async gen(eng, meta, text, key) {
+    const m = moodById(meta.moodId);
+    if (eng === 'gemini') return Gem.speak(text, m, meta.note || '', key);
+    if (eng === 'fish') return Fish.speak(text, meta.narrator, m, key);
+    if (eng === 'kokoro') return this.call('kokoroPrepare', key, text, Kok.sidFor(m));
+    return this.call('clonePrepare', key, text, meta.narrator);
+  },
+  update() {
+    const j = this.job; if (!j) return;
+    j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
+    const st = $('#mkSt'), bar = $('#mkBar'), btn = $('#bkMake');
+    if (st) st.textContent = j.msg; if (bar) bar.style.width = j.pct + '%';
+    if (btn && bookPageId === j.id) btn.textContent = '🎧 Audiobook: ' + this.statusText();
+    if (!P.playing && j.state === 'running') Out.session(true, true, 'Saving audiobook · ' + j.pct + '%', j.title);   // keeps BookTalk awake while it works
+  },
+  async run(meta, content, eng) {
+    const plan = this.plan(meta, content, eng);
+    const saved = LS.get('make.' + meta.id, null);
+    const exported = new Set(saved && saved.eng === eng ? saved.exported : []);
+    const j = this.job = { id: meta.id, title: meta.title, eng, state: 'running', done: 0, total: plan.reduce((a, c) => a + c.units.filter(u => !u.scene).length, 0), chNow: 0, chTotal: plan.length, pct: 0, msg: 'Starting…' };
+    LS.set('make.' + meta.id, { eng, exported: [...exported] });
+    toast('Saving “' + meta.title + '” as an audiobook. You can keep using the app.', 4000);
+    let where = '';
+    try {
+      for (const c of plan) {
+        j.chNow = c.n + 1;
+        const items = [];
+        for (const u of c.units) {
+          if (j.cancel) return;
+          if (u.scene) { items.push({ gap: 1200 }); continue; }
+          const key = this.keyFor(eng, meta, u.text);
+          if (!exported.has(c.ch) && !NATIVE.cacheHas(key)) {
+            j.msg = `Chapter ${c.n + 1} of ${plan.length}: ${c.title}`; this.update();
+            for (let attempt = 0; ; attempt++) {
+              try { await this.gen(eng, meta, u.text, key); break; }
+              catch (e) {
+                if (j.cancel) return;
+                if (e.cancelled && attempt < 50) { await sleep(1500); continue; }   // listening took priority; try again
+                if (e.daily || e.status === 429 || e.status === 402) {
+                  j.state = 'paused'; j.msg = e.daily ? `Paused: today's Gemini allowance is used up. Continue after ${fmtTime(Gem.resetAt())}.` : 'Paused: ' + (e.message || 'limit reached');
+                  this.update(); toast(j.msg, 6000); return;
+                }
+                if (attempt < 3) { await sleep(4000); continue; }
+                throw e;
+              }
+            }
+          }
+          j.done++;
+          items.push({ k: key, gap: u.head ? 800 : 300 });
+          this.update();
+        }
+        if (exported.has(c.ch)) continue;
+        j.msg = `Saving chapter ${c.n + 1} of ${plan.length}…`; this.update();
+        const ev = await this.call('exportChapter', meta.title, `${String(c.n + 1).padStart(2, '0')} - ${c.title}`, JSON.stringify(items));
+        where = ev.where; exported.add(c.ch);
+        LS.set('make.' + meta.id, { eng, exported: [...exported] });
+      }
+      j.state = 'done'; j.done = j.total; j.msg = 'Finished'; this.update();
+      LS.set('make.' + meta.id, null); localStorage.removeItem('bt.make.' + meta.id);
+      openSheet(`<h4>Audiobook saved 🎧</h4><p class="muted">“${esc(meta.title)}” is in <b>${esc(where || 'Music/BookTalk')}</b>, one file per chapter. Open it in any music, podcast or audiobook app, or copy the folder to another device.</p><button class="btn pri block" onclick="closeSheet()">Great</button>`);
+    } catch (e) {
+      j.state = 'paused'; j.msg = 'Stopped: ' + (e.message || e); this.update(); toast(j.msg, 6000);
+    } finally {
+      if (!P.playing && !P.meta) Out.session(false, false);
+      else if (!P.playing && P.meta) Out.session(true, false, P.meta.title, P.chapterTitle());
+      if (bookPageId === meta.id) openBook(meta.id);
+    }
+  },
+};
+const AudioName = t => String(t || 'Untitled').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Untitled';
 
 /* ---------------- UI: navigation ---------------- */
 let currentTab = 'library', bookPageId = null;
@@ -1691,6 +1837,7 @@ async function openBook(id) {
     <div class="bhead">${coverHtml(m)}<div class="grow"><h3>${esc(m.title)}</h3><div class="muted">${esc(m.author || '')}</div>
       <div class="small muted" style="margin-top:6px">${esc(m.format)} · ${m.words.toLocaleString()} words · about ${mins >= 90 ? (mins / 60).toFixed(1) + ' hrs' : mins + ' min'} at 1×</div></div></div>
     <button class="btn pri block" id="bkPlay" style="margin-top:18px;padding:14px">${ICON.play} ${m.progress > 0.002 ? 'Continue listening · ' + Math.round(m.progress * 100) + '%' : 'Start listening'}</button>
+    ${NATIVE ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
     <div class="card anal">
       <div class="g">${a.by === 'gemini' ? '✨ ' : ''}${esc(a.genre || 'Analysis')}</div>
       <div class="small muted">${esc(a.summary || '')}</div>
@@ -1708,6 +1855,7 @@ async function openBook(id) {
       <div class="ch ${m.include[i] ? '' : 'off'}" data-i="${i}"><div class="grow"><div class="n">${esc(c.title)}</div>${c.why ? `<div class="why">${esc(c.why)}</div>` : ''}</div><button class="tog ${m.include[i] ? 'on' : ''}"></button></div>`).join('')}</div>
     <p class="small muted">Sections that look like covers, contents, copyright pages, acknowledgements or indexes are switched off. Switch any back on if you want them read.</p>`;
   $('#bkPlay').onclick = () => P.open(id, true);
+  $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
   $$('#bkMoods .chip').forEach(b => b.onclick = async () => {
     m.moodId = b.dataset.m; await DB.put('meta', m);
     $$('#bkMoods .chip').forEach(x => x.classList.toggle('on', x === b));

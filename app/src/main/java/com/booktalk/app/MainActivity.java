@@ -385,8 +385,23 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         }
 
         @JavascriptInterface
-        public void clonePrepare(String key, String text, String voice) {
-            kokoro.prepare(null, key, text, 0, voice);
+        public void clonePrepare(String reqId, String key, String text, String voice) {
+            kokoro.prepare(reqId == null || reqId.isEmpty() ? null : reqId, key, text, 0, voice);
+        }
+
+        @JavascriptInterface
+        public void exportChapter(String reqId, String book, String name, String itemsJson) {
+            new Thread(() -> {
+                JSONObject o = new JSONObject();
+                try {
+                    o.put("type", "export").put("reqId", reqId);
+                    String where = AudiobookExporter.export(MainActivity.this, cache, book, name, new org.json.JSONArray(itemsJson));
+                    o.put("ok", true).put("where", where);
+                } catch (Throwable e) {
+                    try { o.put("ok", false).put("msg", String.valueOf(e.getMessage())); } catch (JSONException ignored) { }
+                }
+                emit(o);
+            }, "export").start();
         }
 
         @JavascriptInterface

@@ -63,6 +63,7 @@ public class KokoroEngine {
         String key, text, reqId, voice; int sid;   // voice != null -> cloned voice (Pocket TTS)
         volatile boolean aborted;
         final List<Speaker.Chunk> done = new ArrayList<>();
+        final List<String> waiters = new ArrayList<>();   // extra reqIds to notify when finished
         BlockingQueue<Speaker.Chunk> sink;       // set when someone is listening live
         boolean finished;
     }
@@ -309,6 +310,10 @@ public class KokoroEngine {
                 if (r != null) r.aborted = true;
                 Job mine = null;
                 for (Job j : queue) if (key.equals(j.key)) { mine = j; break; }
+                for (Job j : queue) if (j != mine) {
+                    if (j.reqId != null) events.prepared(j.reqId, false, "cancelled");
+                    synchronized (j) { for (String id : j.waiters) events.prepared(id, false, "cancelled"); }
+                }
                 queue.clear();
                 if (mine == null) { mine = new Job(); mine.key = key; mine.text = text; mine.sid = sid; mine.voice = voice; }
                 mine.sink = sink;
@@ -326,8 +331,8 @@ public class KokoroEngine {
         if (cache.has(key)) { if (reqId != null) events.prepared(reqId, true, ""); return; }
         synchronized (this) {
             Job r = running;
-            if (r != null && key.equals(r.key) && !r.aborted) return;
-            for (Job j : queue) if (key.equals(j.key)) return;
+            if (r != null && key.equals(r.key) && !r.aborted) { if (reqId != null) synchronized (r) { r.waiters.add(reqId); } return; }
+            for (Job q : queue) if (key.equals(q.key)) { if (reqId != null) synchronized (q) { q.waiters.add(reqId); } return; }
             Job j = new Job(); j.key = key; j.text = text; j.sid = sid; j.reqId = reqId; j.voice = voice;
             queue.addLast(j);
         }
@@ -336,6 +341,10 @@ public class KokoroEngine {
 
     public void cancelAll() {
         synchronized (this) {
+            for (Job j : queue) {
+                if (j.reqId != null) events.prepared(j.reqId, false, "cancelled");
+                synchronized (j) { for (String id : j.waiters) events.prepared(id, false, "cancelled"); }
+            }
             queue.clear();
             Job r = running;
             if (r != null && r.sink == null) r.aborted = true;
@@ -392,6 +401,8 @@ public class KokoroEngine {
                 synchronized (j) { j.finished = true; if (j.sink != null) j.sink.add(new Speaker.Chunk(null, 0, true)); }
                 synchronized (this) { if (running == j) running = null; }
                 if (j.reqId != null) events.prepared(j.reqId, ok, err);
+                List<String> w; synchronized (j) { w = new ArrayList<>(j.waiters); }
+                for (String id : w) events.prepared(id, ok, err);
                 events.busy(queue.size());
             }
         }
