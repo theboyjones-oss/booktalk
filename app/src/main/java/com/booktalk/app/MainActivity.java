@@ -53,6 +53,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
     private PermissionRequest pendingMic;
     private final ExecutorService net = Executors.newFixedThreadPool(4);
     private AudioCache cache;
+    private KokoroEngine kokoro;
     private ActivityResultLauncher<Intent> filePicker;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -82,6 +83,17 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         speaker = new Speaker(this, this);
         cache = new AudioCache(this);
+        kokoro = new KokoroEngine(this, cache, speaker, new KokoroEngine.Events() {
+            @Override public void install(String stage, int pct, String msg) {
+                try { emit(new JSONObject().put("type", "kokinst").put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
+            }
+            @Override public void prepared(String reqId, boolean ok, String msg) {
+                try { emit(new JSONObject().put("type", "kokprep").put("reqId", reqId).put("ok", ok).put("msg", msg)); } catch (JSONException ignored) { }
+            }
+            @Override public void busy(int pending) {
+                try { emit(new JSONObject().put("type", "kokbusy").put("n", pending)); } catch (JSONException ignored) { }
+            }
+        });
         setupLaunchers();
         setupWebView();
         setupBack();
@@ -314,6 +326,37 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         @JavascriptInterface
         public boolean cacheHas(String cacheKey) { return cache.has(cacheKey); }
+
+        @JavascriptInterface
+        public boolean kokoroSupported() { return KokoroEngine.supported(); }
+
+        @JavascriptInterface
+        public boolean kokoroInstalled() { return kokoro.installed(); }
+
+        @JavascriptInterface
+        public boolean kokoroInstalling() { return kokoro.isInstalling(); }
+
+        @JavascriptInterface
+        public void kokoroInstall() { kokoro.install(); }
+
+        @JavascriptInterface
+        public void kokoroUninstall() { kokoro.uninstall(); }
+
+        @JavascriptInterface
+        public void kokoroPlay(String id, String key, String text, int sid, double speed, int pauseMs) {
+            kokoro.play(id, key, text, sid, (float) speed, pauseMs);
+        }
+
+        @JavascriptInterface
+        public void kokoroPrepare(String reqId, String key, String text, int sid) {
+            kokoro.prepare(reqId == null || reqId.isEmpty() ? null : reqId, key, text, sid);
+        }
+
+        @JavascriptInterface
+        public void kokoroCancel() { kokoro.cancelAll(); }
+
+        @JavascriptInterface
+        public int kokoroPending() { return kokoro.pending(); }
 
         @JavascriptInterface
         public double cacheMB() { return cache.size() / 1048576.0; }

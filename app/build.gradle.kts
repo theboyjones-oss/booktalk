@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -10,8 +11,10 @@ android {
         applicationId = "com.booktalk.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.7"
+        // On-device Kokoro voices need 64-bit ARM (all recent phones)
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
@@ -36,6 +39,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
+
     androidResources {
         noCompress += listOf("js", "html")
     }
@@ -43,8 +54,10 @@ android {
 
 dependencies {
     // Align Kotlin stdlib versions pulled in by AndroidX (avoids duplicate-class errors)
-    implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.8.22"))
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:2.0.21"))
     implementation("androidx.activity:activity:1.9.3")
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.webkit:webkit:1.12.1")
+    // Unpacks the Kokoro voice pack (.tar.bz2) on the phone
+    implementation("org.apache.commons:commons-compress:1.21")
 }

@@ -243,6 +243,79 @@ public class Speaker {
         }, "pcm").start();
     }
 
+    /** A piece of generated speech for streaming playback. */
+    public static class Chunk {
+        public final short[] pcm; public final int offset; public final boolean end;
+        public Chunk(short[] pcm, int offset, boolean end) { this.pcm = pcm; this.offset = offset; this.end = end; }
+    }
+
+    /**
+     * Play speech that is still being generated (Kokoro): chunks arrive on the queue one sentence
+     * at a time; an end chunk finishes the item. Reports each sentence's text offset as it starts.
+     */
+    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, int pauseMs) {
+        stopAll();
+        final int myGen = gen;
+        requestFocus();
+        new Thread(() -> {
+            AudioTrack t = null;
+            try {
+                int minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                int bufBytes = Math.max(minBuf * 4, 64 * 1024);
+                t = new AudioTrack.Builder()
+                        .setAudioAttributes(attrs)
+                        .setAudioFormat(new AudioFormat.Builder().setSampleRate(rate)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                        .setBufferSizeInBytes(bufBytes)
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build();
+                try { t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(1f)); } catch (Exception ignored) { }
+                current = t;
+                t.play();
+                long frames = 0;
+                boolean started = false;
+                while (myGen == gen) {
+                    Chunk c = q.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (c == null) continue;
+                    if (c.end) break;
+                    if (!started) { listener.onStart(id, -1); started = true; }
+                    listener.onRange(id, c.offset);
+                    int off = 0;
+                    while (off < c.pcm.length && myGen == gen) {
+                        int n = t.write(c.pcm, off, Math.min(8192, c.pcm.length - off));
+                        if (n < 0) throw new IllegalStateException("AudioTrack write " + n);
+                        off += n;
+                    }
+                    frames += c.pcm.length;
+                }
+                if (myGen != gen) return;
+                long pauseFrames = (long) rate * pauseMs / 1000;
+                long total = frames + pauseFrames;
+                short[] zeros = new short[4096];
+                long padFrames = pauseFrames + bufBytes / 2, written = 0;
+                long deadline = System.currentTimeMillis() + (long) (total * 1000.0 / rate / Math.max(speed, 0.25f)) + 2500;
+                while (myGen == gen) {
+                    long head = t.getPlaybackHeadPosition() & 0xffffffffL;
+                    if (head >= total || System.currentTimeMillis() > deadline) break;
+                    if (written < padFrames) {
+                        int n = t.write(zeros, 0, (int) Math.min(zeros.length, padFrames - written), AudioTrack.WRITE_NON_BLOCKING);
+                        if (n < 0) break;
+                        written += n;
+                        if (n == 0) Thread.sleep(10);
+                    } else Thread.sleep(10);
+                }
+                if (myGen == gen) listener.onDone(id);
+            } catch (Throwable e) {
+                if (myGen == gen) listener.onError(id, String.valueOf(e.getMessage()));
+            } finally {
+                if (t != null) {
+                    if (current == t) current = null;
+                    try { t.release(); } catch (Exception ignored) { }
+                }
+            }
+        }, "stream").start();
+    }
+
     /** Report done after ms of silence (scene breaks). */
     public void silence(String id, int ms) {
         stopAll();

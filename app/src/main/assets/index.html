@@ -309,6 +309,8 @@ const DEFAULT_SETTINGS = {
   textModel: 'gemini-2.5-flash',
   sysVoice: '',
   sysEngine: '',
+  offline: 'android',   // offline voice: 'android' (phone's TTS) or 'kokoro' (built into BookTalk)
+  kokVoice: 18,         // Kokoro speaker id; 18 = Puck
   speed: 1,
   skipMatter: true,
   readSize: 19,
@@ -1151,6 +1153,32 @@ const Out = {
 };
 if (!NATIVE && window.speechSynthesis) speechSynthesis.onvoiceschanged = () => Out.loadVoices();
 
+/* ---------------- Kokoro (on-device voices) ---------------- */
+const KOK_VOICES = [
+  [18, 'Puck', 'US male, playful and expressive'], [3, 'Heart', 'US female, warm (best quality)'], [2, 'Bella', 'US female, rich'],
+  [16, 'Michael', 'US male, narrator'], [14, 'Fenrir', 'US male, strong'], [6, 'Nicole', 'US female, soft'], [9, 'Sarah', 'US female, clear'],
+  [1, 'Aoede', 'US female'], [5, 'Kore', 'US female'], [0, 'Alloy', 'US female'], [7, 'Nova', 'US female'], [10, 'Sky', 'US female, light'],
+  [4, 'Jessica', 'US female'], [8, 'River', 'US female'], [11, 'Adam', 'US male, deep'], [12, 'Echo', 'US male'], [13, 'Eric', 'US male'],
+  [15, 'Liam', 'US male, young'], [17, 'Onyx', 'US male, deep'], [19, 'Santa', 'US male, jolly'],
+  [21, 'Emma', 'British female'], [22, 'Isabella', 'British female'], [20, 'Alice', 'British female'], [23, 'Lily', 'British female'],
+  [26, 'George', 'British male'], [25, 'Fable', 'British male'], [27, 'Lewis', 'British male'], [24, 'Daniel', 'British male'],
+];
+const kokName = sid => (KOK_VOICES.find(v => v[0] === +sid) || [0, 'Kokoro'])[1];
+const Kok = {
+  ready: false, busy: 0, inst: null,
+  refresh() { this.ready = !!(NATIVE && NATIVE.kokoroInstalled && NATIVE.kokoroInstalled()); return this.ready; },
+  supported() { return !!(NATIVE && NATIVE.kokoroSupported && NATIVE.kokoroSupported()); },
+  active() { return S.offline === 'kokoro' && this.ready; },
+  sidFor(mood) { return mood && mood.kokVoice != null && mood.kokVoice !== '' ? +mood.kokVoice : +S.kokVoice; },
+  key(text, sid) { return 'kok|' + hashText(text) + '|' + sid; },
+  onInstall(ev) {
+    this.inst = ev;
+    if (ev.stage === 'done') { this.refresh(); toast('Kokoro voices are ready'); }
+    if (ev.stage === 'error') toast('Kokoro download failed: ' + (ev.msg || ''), 5000);
+    const el = $('#kokInst'); if (el) renderKokInstall(el);
+  },
+};
+
 /* ---------------- Player ---------------- */
 const MAX_UNIT = 650;
 function splitSentences(t, max) {
@@ -1322,12 +1350,37 @@ const P = {
     if (S.engine === 'gemini' && (S.apiKey || this.narrator())) { this.pause(); toast('AI voice unavailable. Switch to "AI voice + backup" to keep listening offline.', 4500); return; }
     this.adapt('system'); unit = this.units[this.u];
     if (unit.scene) { this.curId = 'u' + tok; Out.silence(this.curId, 1000); return; }
+    if (Kok.active()) {
+      const sid = Kok.sidFor(m), k = Kok.key(unit.text, sid);
+      this.curId = 'u' + tok;
+      Sync.prepare(unit, this.curId, clamp(m.pace * speed, 0.5, 2.5));
+      if (!NATIVE.cacheHas(k)) setEngineChip('loading'); else setEngineChip('kokoro');
+      NATIVE.kokoroPlay(this.curId, k, unit.text, sid, clamp(m.pace * speed, 0.5, 2.5), unit.head ? 650 : 120);
+      if (this.lastEngine && this.lastEngine !== 'kokoro' && this.lastEngine !== 'system') toast('Switched to the Kokoro voice');
+      this.lastEngine = 'kokoro';
+      this.kokAhead(S.prefetch + 1);
+      return;
+    }
     this.curId = 'u' + tok;
     Sync.prepare(unit, this.curId, clamp(m.pace * speed, 0.3, 3));
     Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, unit.head ? 650 : 120);
     setEngineChip('system');
     if (this.lastEngine && this.lastEngine !== 'system') toast('Switched to the built-in voice');
     this.lastEngine = 'system';
+  },
+  // Ask Kokoro to prepare upcoming passages in the background
+  kokAhead(n, wholeChapter) {
+    if (!Kok.active()) return 0;
+    const sid = Kok.sidFor(this.mood), inc = this.included();
+    let ch = this.ch, u = this.u, count = 0;
+    while (wholeChapter || count < n) {
+      u++;
+      if (u >= this.unitsFor(ch).length) { if (wholeChapter) break; const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
+      const unit = this.unitsFor(ch)[u];
+      if (unit.scene) continue;
+      NATIVE.kokoroPrepare('', Kok.key(unit.text, sid), unit.text, sid); count++;
+    }
+    return count;
   },
   engineFailed(eng, e) {
     const st = e.status || 0, name = eng === 'fish' ? 'Fish Audio' : 'Gemini';
@@ -1423,7 +1476,10 @@ function onNative(ev) {
     case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else P.onError(ev.id, ev.msg); break;
     case 'fish': Fish.onEvent(ev); break;
     case 'gem': Gem.onEvent(ev); break;
-    case 'start': Sync.start(ev.id, ev.dur); break;
+    case 'kokinst': Kok.onInstall(ev); break;
+    case 'kokbusy': Kok.busy = ev.n; { const b = $('#kokBusy'); if (b) b.textContent = ev.n ? `${ev.n} passage${ev.n > 1 ? 's' : ''} being prepared` : 'Nothing waiting'; } break;
+    case 'kokprep': break;
+    case 'start': Sync.start(ev.id, ev.dur); if (ev.id === P.curId && P.lastEngine) setEngineChip(P.lastEngine); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
     case 'media':
@@ -1447,7 +1503,11 @@ const Preview = {
     if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Preparing…'; }
     this.btn = btn;
     try {
-      if (engine === 'fish') {
+      if (engine === 'kokoro') {
+        if (!Kok.ready) { toast('Download the Kokoro voices in Settings first'); this.done(); return; }
+        const sid = mood.kokSid != null ? +mood.kokSid : Kok.sidFor(mood), text = mood.sample || SAMPLE;
+        NATIVE.kokoroPlay(id, Kok.key(text, sid), text, sid, clamp(mood.pace * S.speed, 0.5, 2.5), 0);
+      } else if (engine === 'fish') {
         if (!S.fishKey) { toast('Add your Fish Audio key in Settings first'); this.done(); return; }
         const a = await Fish.speak(mood.sample || SAMPLE, mood.clone, mood);
         if (this.id !== id) { if (a.store) Out.drop(a.store); return; }
@@ -1728,9 +1788,11 @@ function setEngineChip(state) {
   const label = state === 'loading' ? `<span class="dot l"></span> Preparing voice…`
     : state === 'gemini' ? `<span class="dot g"></span> ${esc(gemShort(Gem.current || Gem.available() || S.ttsModel).replace('Gemini ', ''))} · ${esc(P.mood.voice)}`
     : state === 'fish' ? `<span class="dot g"></span> ${esc(P.narrator()?.name || 'Your voice')}`
+    : state === 'kokoro' ? `<span class="dot g"></span> Kokoro · ${esc(kokName(Kok.sidFor(P.mood)))}`
     : state === 'system' ? `<span class="dot s"></span> Built-in voice`
     : eng === 'fish' ? `<span class="dot"></span> ${esc(P.narrator()?.name || 'Your voice')}`
-    : eng === 'gemini' ? `<span class="dot"></span> Gemini · ${esc(P.mood.voice)}` : `<span class="dot"></span> Built-in voice`;
+    : eng === 'gemini' ? `<span class="dot"></span> Gemini · ${esc(P.mood.voice)}`
+    : Kok.active() ? `<span class="dot"></span> Kokoro · ${esc(kokName(Kok.sidFor(P.mood)))}` : `<span class="dot"></span> Built-in voice`;
   c.innerHTML = label;
 }
 function renderProgress() {
@@ -1796,9 +1858,14 @@ $('#chSleep').onclick = () => {
 $('#chEngine').onclick = () => {
   const off = P.gemOffUntil > Date.now() || P.fishOffUntil > Date.now();
   openSheet(`<h4>Voice engine</h4>
-    <div class="seg" id="engSeg">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="seg" id="engSeg">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Offline only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
     <p class="small muted">${!S.apiKey && !S.fishKey ? 'No Gemini or Fish Audio key yet, so the built-in voice is used. Add one in Settings.' : off ? 'An AI voice is paused after an error and will be retried shortly.' : 'AI voices (your own voice via Fish Audio, or Gemini) need an internet connection. With AI voice + backup, BookTalk drops to the built-in voice if they fail or you go offline.'}</p>
-    ${off ? '<button class="btn block" id="engRetry">Retry Gemini now</button>' : ''}`, sh => {
+    ${off ? '<button class="btn block" id="engRetry">Retry Gemini now</button>' : ''}
+    ${Kok.active() ? `<div class="card" style="margin-top:14px"><b>Kokoro (on this phone)</b><div class="small muted" style="margin:4px 0 10px">Prepare passages before you need them so playback never waits. Prepared audio is saved.</div>
+      <div class="small muted" id="kokBusy">${Kok.busy ? Kok.busy + ' passages being prepared' : 'Nothing waiting'}</div>
+      <div class="row" style="margin-top:10px"><button class="btn grow" id="kokCh">Prepare this chapter</button><button class="btn ghost" id="kokStop">Stop</button></div></div>` : ''}`, sh => {
+    $('#kokCh', sh)?.addEventListener('click', () => { const n = P.kokAhead(0, true); toast(n ? `Preparing ${n} passages in the background` : 'This chapter is already prepared'); });
+    $('#kokStop', sh)?.addEventListener('click', () => { NATIVE.kokoroCancel(); });
     $$('[data-e]', sh).forEach(b => b.onclick = () => { S.engine = b.dataset.e; saveSettings(); $$('[data-e]', sh).forEach(x => x.classList.toggle('on', x === b)); P.restartUnit(); setEngineChip(''); });
     $('#engRetry', sh)?.addEventListener('click', () => { P.gemOffUntil = 0; P.fishOffUntil = 0; closeSheet(); P.restartUnit(); });
   });
@@ -1920,22 +1987,24 @@ function editMood(id, isNew) {
     <input id="mdFish" value="${esc(draft.fishTag || '')}" placeholder="e.g. [sad], [whispering], [excited]; leave blank for none">
     ${sl('pace', 'Pace (all voices)', 0.6, 1.6, 0.02)}
     ${sl('pitch', 'Pitch (built-in voice)', 0.6, 1.5, 0.02)}
-    <label class="f">Built-in voice for this mood</label>
+    <label class="f">Kokoro voice for this mood</label>
+    <select id="mdKok"><option value="">Use default from Settings</option>${KOK_VOICES.map(([id, n, d]) => `<option value="${id}" ${draft.kokVoice !== undefined && draft.kokVoice !== '' && +draft.kokVoice === id ? 'selected' : ''}>${n} · ${d}</option>`).join('')}</select>
+    <label class="f">Phone voice for this mood</label>
     <select id="mdSys"><option value="">Use default from Settings</option>${voices.map(v => `<option value="${esc(v.name)}" ${v.name === draft.sysVoice ? 'selected' : ''}>${esc(v.name)} · ${esc(v.lang)}${v.network ? ' · online' : ''}</option>`).join('')}</select>
     <label class="f">Preview text</label>
     <textarea id="mdSample" rows="2">${esc(draft.sample || SAMPLE)}</textarea>
-    <div class="row" style="margin-top:12px"><button class="btn grow" id="pvG">✨ Gemini preview</button><button class="btn grow" id="pvS">Built-in preview</button></div>
+    <div class="row" style="margin-top:12px"><button class="btn grow" id="pvG">✨ Gemini preview</button><button class="btn grow" id="pvS">${Kok.active() ? 'Kokoro preview' : 'Built-in preview'}</button></div>
     ${CLONES.length ? `<div class="row" style="margin-top:8px">${CLONES.slice(0, 3).map(c => `<button class="btn grow" data-pvc="${c.id}">🗣️ ${esc(c.name)}</button>`).join('')}</div>` : ''}
     <div class="row" style="margin-top:12px">${DEFAULT_MOODS.some(d => d.id === id) ? '' : '<button class="btn ghost" id="mdDel" style="color:var(--bad)">Delete</button>'}<button class="btn ghost grow" id="mdDup">Duplicate</button><button class="btn pri grow" id="mdSave">Save</button></div>`, sh => {
     const read = () => {
       draft.icon = $('#mdIcon', sh).value.trim() || '🎭'; draft.name = $('#mdName', sh).value.trim() || 'Mood';
-      draft.voice = $('#mdVoice', sh).value; draft.style = $('#mdStyle', sh).value.trim(); draft.sysVoice = $('#mdSys', sh).value; draft.fishTag = $('#mdFish', sh).value.trim();
+      draft.voice = $('#mdVoice', sh).value; draft.style = $('#mdStyle', sh).value.trim(); draft.sysVoice = $('#mdSys', sh).value; draft.fishTag = $('#mdFish', sh).value.trim(); draft.kokVoice = $('#mdKok', sh).value === '' ? '' : +$('#mdKok', sh).value;
       const smp = $('#mdSample', sh).value.trim(); draft.sample = smp && smp !== SAMPLE ? smp : undefined;
     };
     $$('input[type=range]', sh).forEach(r => r.oninput = () => { draft[r.dataset.k] = +r.value; r.nextElementSibling.textContent = (+r.value).toFixed(2); });
     $$('[data-add]', sh).forEach(b => b.onclick = () => { const ta = $('#mdStyle', sh); ta.value = (ta.value.trim().replace(/[.,]$/, '') + (ta.value.trim() ? ', ' : 'in a ') + b.dataset.add).trim(); });
     $('#pvG', sh).onclick = e => { read(); Preview.run(draft, 'gemini', e.currentTarget); };
-    $('#pvS', sh).onclick = e => { read(); Preview.run(draft, 'system', e.currentTarget); };
+    $('#pvS', sh).onclick = e => { read(); Preview.run(draft, Kok.active() ? 'kokoro' : 'system', e.currentTarget); };
     $$('[data-pvc]', sh).forEach(b => b.onclick = e => { read(); Preview.run({ ...draft, clone: b.dataset.pvc }, 'fish', e.currentTarget); });
     $('#mdSave', sh).onclick = () => {
       read(); Object.assign(m, draft); saveMoods(); closeSheet(); renderMoods();
@@ -1947,6 +2016,22 @@ function editMood(id, isNew) {
 }
 
 /* ---------------- UI: settings ---------------- */
+function renderKokInstall(el) {
+  if (!el) return;
+  if (!NATIVE) { el.innerHTML = '<p class="small muted">Kokoro runs inside the Android app.</p>'; return; }
+  if (!Kok.supported()) { el.innerHTML = '<p class="small muted">Kokoro needs a 64-bit phone, which this one isn\'t.</p>'; return; }
+  Kok.refresh();
+  const ev = Kok.inst, busy = NATIVE.kokoroInstalling() || (ev && (ev.stage === 'download' || ev.stage === 'extract'));
+  $('#kokPick')?.classList.toggle('hidden', !Kok.ready);
+  if (Kok.ready) { el.innerHTML = '<div class="small" style="color:var(--ok)">✓ Kokoro voices installed</div>'; return; }
+  if (busy && ev) {
+    const pct = Math.max(0, ev.pct);
+    el.innerHTML = `<div class="small" style="margin:6px 0">${ev.stage === 'download' ? `Downloading… ${ev.pct >= 0 ? pct + '%' : ''} ${ev.msg ? '(' + ev.msg + ' MB)' : ''}` : `Unpacking… ${pct}%`}</div><div class="prog"><i style="width:${pct}%"></i></div>`;
+    return;
+  }
+  el.innerHTML = `<button class="btn pri block" id="kokGet">Download Kokoro voices (132 MB)</button><p class="small muted" style="margin-bottom:0">One-time download, best on Wi-Fi. Uses about 170 MB of storage.</p>`;
+  $('#kokGet').onclick = () => { NATIVE.kokoroInstall(); Kok.inst = { stage: 'download', pct: 0 }; renderKokInstall(el); };
+}
 const TTS_MODELS = [['gemini-3.1-flash-tts-preview', 'Gemini 3.1 Flash TTS (newest)'], ['gemini-2.5-flash-preview-tts', 'Gemini 2.5 Flash TTS'], ['gemini-2.5-pro-preview-tts', 'Gemini 2.5 Pro TTS (best, slower)']];
 function renderSettings() {
   const voices = Out.loadVoices();
@@ -1955,7 +2040,7 @@ function renderSettings() {
   $('#setBody').innerHTML = `
     <h2>Voice engine</h2>
     <div class="card">
-      <div class="seg" id="sEng">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg" id="sEng">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Offline only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <p class="small muted" style="margin-bottom:0">AI voice + backup uses your own cloned voice (when a book has one) or Gemini online, and drops to your phone's built-in voice if you're offline or they fail.</p>
     </div>
     <h2>Gemini</h2>
@@ -1987,7 +2072,21 @@ function renderSettings() {
       <select id="sFishModel">${[['s2.1-pro-free', 'S2.1 Pro Free (free until 30 Nov 2026)'], ['s2.1-pro', 'S2.1 Pro (paid, about $15 per 180k words)'], ['s3-pro', 'S3 Pro (paid)']].map(([v, l]) => `<option value="${v}" ${v === S.fishModel ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <p class="small muted" style="margin-bottom:0">Fish Audio's free model is offered until 30 November 2026. After that, or if it won't use your cloned voice, switch to S2.1 Pro and add credit at fish.audio (about £6 for an average novel).</p>
     </div>
-    <h2>Built-in voice</h2>
+    <h2>Offline voice</h2>
+    <div class="card">
+      <div class="seg" id="sOff"><button data-o="android" class="${S.offline !== 'kokoro' ? 'on' : ''}">Phone's voices</button><button data-o="kokoro" class="${S.offline === 'kokoro' ? 'on' : ''}">Kokoro (in BookTalk)</button></div>
+      <p class="small muted">Used when you're offline, when the AI voices run out, or always with "Offline only". Kokoro gives natural voices, including Puck, that run on the phone for free with no limits.</p>
+      <div id="kokArea" class="${S.offline === 'kokoro' ? '' : 'hidden'}">
+        <div id="kokInst"></div>
+        <div id="kokPick" class="${Kok.ready ? '' : 'hidden'}">
+          <label class="f">Kokoro voice</label>
+          <select id="sKokV">${KOK_VOICES.map(([id, n, d]) => `<option value="${id}" ${id === +S.kokVoice ? 'selected' : ''}>${n} · ${d}</option>`).join('')}</select>
+          <div class="row" style="margin-top:10px"><button class="btn grow" id="sKokTest">Preview</button><button class="btn ghost" id="sKokDel">Remove</button></div>
+          <p class="small muted" style="margin-bottom:0">Speed depends on your phone. BookTalk prepares upcoming passages while you listen, and you can prepare a whole chapter from the player's voice chip.</p>
+        </div>
+      </div>
+    </div>
+    <h2>Phone's voices</h2>
     <div class="card">
       ${NATIVE ? `<label class="f" style="margin-top:0">Voice app</label>
       <select id="sEngApp"><option value="">Phone default</option>${engines.map(e => `<option value="${esc(e.name)}" ${e.name === S.sysEngine ? 'selected' : ''}>${esc(e.label)}</option>`).join('')}</select>
@@ -2025,6 +2124,16 @@ function renderSettings() {
   $('#sFish').onchange = e => { S.fishKey = e.target.value.trim(); saveSettings(); P.fishOffUntil = 0; };
   $('#sFishShow').onclick = () => { const k = $('#sFish'); k.type = k.type === 'password' ? 'text' : 'password'; };
   $('#sFishModel').onchange = e => { S.fishModel = e.target.value; saveSettings(); P.fishOffUntil = 0; P.clearCache(); };
+  renderKokInstall($('#kokInst'));
+  $$('#sOff [data-o]').forEach(b => b.onclick = () => {
+    S.offline = b.dataset.o; saveSettings(); $$('#sOff [data-o]').forEach(x => x.classList.toggle('on', x === b));
+    $('#kokArea').classList.toggle('hidden', S.offline !== 'kokoro'); P.restartUnit();
+  });
+  $('#sKokV').onchange = e => { S.kokVoice = +e.target.value; saveSettings(); NATIVE?.kokoroCancel?.(); P.restartUnit(); };
+  $('#sKokTest').onclick = e => Preview.run({ ...moodById('story'), kokSid: +$('#sKokV').value, sample: 'Hello! I\'m your Kokoro narrator, and I live right here on your phone. Shall we begin?' }, 'kokoro', e.currentTarget);
+  $('#sKokDel').onclick = () => openSheet(`<h4>Remove Kokoro voices?</h4><p class="muted">Frees about 170 MB. You can download them again any time.</p><div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="kdYes">Remove</button></div>`, sh => {
+    $('#kdYes', sh).onclick = () => { NATIVE.kokoroUninstall(); Kok.refresh(); closeSheet(); renderSettings(); };
+  });
   $('#sEngApp')?.addEventListener('change', e => {
     S.sysEngine = e.target.value; S.sysVoice = ''; saveSettings();
     NATIVE.setTtsEngine(S.sysEngine); toast('Loading voices…');
@@ -2042,6 +2151,7 @@ function renderSettings() {
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
   try { if (navigator.storage?.persist) navigator.storage.persist(); } catch {}
   if (NATIVE && S.sysEngine && NATIVE.setTtsEngine) NATIVE.setTtsEngine(S.sysEngine);
+  Kok.refresh();
   await renderLibrary();
   Out.loadVoices();
   const last = LS.get('lastBook', null);
