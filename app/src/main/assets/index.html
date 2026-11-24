@@ -308,6 +308,7 @@ const DEFAULT_SETTINGS = {
   ttsModel: 'gemini-3.1-flash-tts-preview',
   textModel: 'gemini-2.5-flash',
   sysVoice: '',
+  sysEngine: '',
   speed: 1,
   skipMatter: true,
   readSize: 19,
@@ -1949,6 +1950,7 @@ function editMood(id, isNew) {
 const TTS_MODELS = [['gemini-3.1-flash-tts-preview', 'Gemini 3.1 Flash TTS (newest)'], ['gemini-2.5-flash-preview-tts', 'Gemini 2.5 Flash TTS'], ['gemini-2.5-pro-preview-tts', 'Gemini 2.5 Pro TTS (best, slower)']];
 function renderSettings() {
   const voices = Out.loadVoices();
+  let engines = []; try { engines = NATIVE ? JSON.parse(NATIVE.ttsEngines() || '[]') : []; } catch {}
   const custom = !TTS_MODELS.some(m => m[0] === S.ttsModel);
   $('#setBody').innerHTML = `
     <h2>Voice engine</h2>
@@ -1987,6 +1989,10 @@ function renderSettings() {
     </div>
     <h2>Built-in voice</h2>
     <div class="card">
+      ${NATIVE ? `<label class="f" style="margin-top:0">Voice app</label>
+      <select id="sEngApp"><option value="">Phone default</option>${engines.map(e => `<option value="${esc(e.name)}" ${e.name === S.sysEngine ? 'selected' : ''}>${esc(e.label)}</option>`).join('')}</select>
+      <p class="small muted">Install a free offline voice app such as <a href="https://f-droid.org/packages/app.marmalade.tts/" target="_blank">Marmalade TTS</a> (Kokoro voices, including a Puck voice), pick it here, then choose the voice below.</p>
+      <label class="f">Voice</label>` : ''}
       <select id="sSys"><option value="">Phone default</option>${voices.map(v => `<option value="${esc(v.name)}" ${v.name === S.sysVoice ? 'selected' : ''}>${esc(v.name)} · ${esc(v.lang)}${v.network ? ' · online' : ''}</option>`).join('')}</select>
       <div class="row" style="margin-top:12px"><button class="btn grow" id="sSysTest">Test</button>${NATIVE ? '<button class="btn grow" id="sSysMore">Get more voices</button>' : ''}</div>
       <p class="small muted" style="margin-bottom:0">For the most natural offline voice, install the “English (United Kingdom)” voice pack in Speech Services by Google and pick one of its voices here.</p>
@@ -2019,6 +2025,10 @@ function renderSettings() {
   $('#sFish').onchange = e => { S.fishKey = e.target.value.trim(); saveSettings(); P.fishOffUntil = 0; };
   $('#sFishShow').onclick = () => { const k = $('#sFish'); k.type = k.type === 'password' ? 'text' : 'password'; };
   $('#sFishModel').onchange = e => { S.fishModel = e.target.value; saveSettings(); P.fishOffUntil = 0; P.clearCache(); };
+  $('#sEngApp')?.addEventListener('change', e => {
+    S.sysEngine = e.target.value; S.sysVoice = ''; saveSettings();
+    NATIVE.setTtsEngine(S.sysEngine); toast('Loading voices…');
+  });
   $('#sSys').onchange = e => { S.sysVoice = e.target.value; saveSettings(); };
   $('#sSysTest').onclick = e => Preview.run({ ...moodById('story'), sysVoice: '', sample: 'Hello, I\'m the built-in BookTalk voice. Shall we begin?' }, 'system', e.currentTarget);
   $('#sSysMore')?.addEventListener('click', () => NATIVE.openVoiceSettings());
@@ -2031,6 +2041,7 @@ function renderSettings() {
 (async function start() {
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
   try { if (navigator.storage?.persist) navigator.storage.persist(); } catch {}
+  if (NATIVE && S.sysEngine && NATIVE.setTtsEngine) NATIVE.setTtsEngine(S.sysEngine);
   await renderLibrary();
   Out.loadVoices();
   const last = LS.get('lastBook', null);

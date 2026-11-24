@@ -59,12 +59,35 @@ public class Speaker {
         this.ctx = ctx.getApplicationContext();
         this.listener = listener;
         this.audio = (AudioManager) this.ctx.getSystemService(Context.AUDIO_SERVICE);
-        initTts();
+        initTts(null);
+    }
+
+    /** Switch the text-to-speech app (engine package), or null for the phone default. */
+    public void setEngine(String pkg) {
+        String want = pkg == null || pkg.isEmpty() ? null : pkg;
+        if (tts != null) {
+            try { tts.stop(); tts.shutdown(); } catch (Exception ignored) { }
+        }
+        ttsReady = false;
+        initTts(want);
+    }
+
+    public String enginesJson() {
+        JSONArray arr = new JSONArray();
+        try {
+            if (tts != null) for (TextToSpeech.EngineInfo e : tts.getEngines()) {
+                JSONObject o = new JSONObject();
+                o.put("name", e.name);
+                o.put("label", e.label);
+                arr.put(o);
+            }
+        } catch (Exception ignored) { }
+        return arr.toString();
     }
 
     /* ---------------- Built-in TTS ---------------- */
 
-    private void initTts() {
+    private void initTts(String engine) {
         tts = new TextToSpeech(ctx, status -> {
             if (status != TextToSpeech.SUCCESS) return;
             try { tts.setLanguage(Locale.UK); } catch (Exception ignored) { }
@@ -91,7 +114,7 @@ public class Speaker {
             });
             ttsReady = true;
             listener.onVoicesReady();
-        });
+        }, engine);
     }
 
     public void speak(String id, String text, float pitch, float rate, String voiceName, int pauseMs) {

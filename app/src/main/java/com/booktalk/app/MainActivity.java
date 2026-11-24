@@ -347,6 +347,15 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         public String ttsVoices() { return speaker.voicesJson(); }
 
         @JavascriptInterface
+        public String ttsEngines() { return speaker.enginesJson(); }
+
+        @JavascriptInterface
+        public void setTtsEngine(String pkg) { speaker.setEngine(pkg); }
+
+        @JavascriptInterface
+        public String ttsEngine() { return speaker.defaultEngine(); }
+
+        @JavascriptInterface
         public void setSession(boolean active, boolean playing, String title, String sub) {
             if (!playing) speaker.abandonFocus();
             PlaybackService.update(getApplicationContext(), active, playing, title, sub);
