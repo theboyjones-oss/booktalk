@@ -238,6 +238,8 @@ public class Speaker {
         }
     }
 
+    public int currentGen() { return gen; }
+
     public void stopAll() {
         stopPcm();
         if (tts != null) {

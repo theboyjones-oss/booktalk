@@ -304,6 +304,8 @@ const DEFAULT_SETTINGS = {
   engine: 'auto',            // auto = Gemini with built-in fallback | gemini | system
   apiKey: '',
   fishKey: '',
+  gemLong: true,
+  gemChain: true,
   fishModel: 's2.1-pro-free',
   ttsModel: 'gemini-3.1-flash-tts-preview',
   textModel: 'gemini-2.5-flash',
@@ -950,25 +952,87 @@ function ttsPrompt(text, mood, note) {
   if (style && !/^(in|like|as|with|slowly|softly|quietly|gently|calmly|brightly|warmly)\b/i.test(style)) style = 'with this delivery: ' + style;
   return `Read the following aloud${style ? ' ' + style : ''}${note ? ` (narrator's note: ${note.replace(/[()]/g, '')})` : ''}:\n\n${text}`;
 }
-async function geminiSpeak(text, mood, note, signal) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(S.ttsModel)}:generateContent`, {
-    method: 'POST', signal,
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: ttsPrompt(text, mood, note) }] }],
-      generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: mood.voice || 'Sulafat' } } } },
-    }),
+function gemBody(text, mood, note) {
+  return JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: ttsPrompt(text, mood, note) }] }],
+    generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: mood.voice || 'Sulafat' } } } },
   });
-  if (!r.ok) {
-    let msg = ''; try { msg = (await r.json()).error?.message || ''; } catch {}
-    throw new HttpError(r.status, msg || ('HTTP ' + r.status));
-  }
+}
+function gemError(status, raw) {
+  let msg = ''; try { msg = JSON.parse(raw).error?.message || ''; } catch { msg = (/"message"\s*:\s*"([^"]+)/.exec(raw) || [])[1] || ''; }
+  const e = new HttpError(status, msg || raw.slice(0, 200) || ('HTTP ' + status)); e.raw = raw; return e;
+}
+async function geminiSpeak(text, mood, note, signal, model = S.ttsModel) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey }, body: gemBody(text, mood, note),
+  });
+  if (!r.ok) throw gemError(r.status, await r.text());
   const j = await r.json();
   const part = j.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
   if (!part) throw new HttpError(0, 'Gemini returned no audio' + (j.candidates?.[0]?.finishReason ? ' (' + j.candidates[0].finishReason + ')' : ''));
   const rate = +(/rate=(\d+)/.exec(part.inlineData.mimeType || '')?.[1] || 24000);
   return { b64: part.inlineData.data, rate };
 }
+
+/* Gemini quota handling: long passages, model fallback chain, daily-limit tracking */
+const GEM_MODELS = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'];
+const gemShort = m => ({ 'gemini-3.1-flash-tts-preview': 'Gemini 3.1 Flash', 'gemini-2.5-flash-preview-tts': 'Gemini 2.5 Flash', 'gemini-2.5-pro-preview-tts': 'Gemini 2.5 Pro' }[m] || m);
+let GEM_OUT = LS.get('gemOut', {});      // model -> time its daily allowance comes back
+function nextPacificMidnight() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now);
+  const g = t => +(parts.find(p => p.type === t)?.value || 0);
+  const left = ((23 - g('hour')) * 3600 + (59 - g('minute')) * 60 + (60 - g('second'))) * 1000;
+  return now.getTime() + left + 60000;
+}
+const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + (new Date(t).toDateString() !== new Date().toDateString() ? ' tomorrow' : '');
+const Gem = {
+  pend: new Map(),
+  chain() { return S.gemChain === false ? [S.ttsModel] : [S.ttsModel, ...GEM_MODELS.filter(m => m !== S.ttsModel)]; },
+  available() { const now = Date.now(); return this.chain().find(m => !(GEM_OUT[m] > now)); },
+  resetAt() { const now = Date.now(); const ts = this.chain().map(m => GEM_OUT[m] || 0).filter(t => t > now); return ts.length ? Math.min(...ts) : 0; },
+  markOut(m, until) { GEM_OUT[m] = until; LS.set('gemOut', GEM_OUT); },
+  current: '',
+  async speak(text, mood, note, cacheKey) {
+    for (let guard = 0; guard < 8; guard++) {
+      const model = this.available();
+      if (!model) { const e = new HttpError(429, 'All Gemini voices have used today\'s free allowance'); e.daily = true; throw e; }
+      try { const a = await this.once(model, text, mood, note, cacheKey); this.current = model; return a; }
+      catch (e) {
+        const raw = e.raw || e.message || '';
+        if (e.status === 429) {
+          const delay = +((/retry in ([\d.]+)\s*s/i.exec(raw) || /"retryDelay"\s*:\s*"([\d.]+)s"/.exec(raw) || [])[1] || 0);
+          if (/PerDay|per day|daily/i.test(raw) || delay > 300) {
+            this.markOut(model, nextPacificMidnight());
+            const nx = this.available();
+            toast(nx ? `${gemShort(model)} has used today's free allowance. Switching to ${gemShort(nx)}.` : `${gemShort(model)} has used today's free allowance.`, 4500);
+            continue;
+          }
+          if (delay > 0 && delay <= 65) { setEngineChip('loading'); await sleep(delay * 1000 + 400); continue; }
+          throw e;
+        }
+        if (e.status === 404 || (e.status === 400 && /model|not supported|not found/i.test(raw))) { this.markOut(model, Date.now() + 12 * 3600e3); continue; }
+        throw e;
+      }
+    }
+    throw new HttpError(429, 'Gemini is busy');
+  },
+  once(model, text, mood, note, cacheKey) {
+    if (!NATIVE) return geminiSpeak(text, mood, note, undefined, model);
+    return new Promise((res, rej) => {
+      const id = 'g' + uid();
+      const t = setTimeout(() => { if (this.pend.delete(id)) rej(new HttpError(0, 'Gemini timed out')); }, 300000);
+      this.pend.set(id, { res: ev => { clearTimeout(t); res({ store: cacheKey, rate: ev.rate || 24000 }); }, rej: e => { clearTimeout(t); rej(e); } });
+      NATIVE.geminiTts(id, cacheKey, S.apiKey, model, gemBody(text, mood, note));
+    });
+  },
+  onEvent(ev) {
+    const p = this.pend.get(ev.reqId); if (!p) return;
+    this.pend.delete(ev.reqId);
+    ev.ok ? p.res(ev) : p.rej(ev.status ? gemError(ev.status, ev.msg || '') : new HttpError(0, ev.msg || 'Gemini error'));
+  },
+};
+function hashText(str) { let h1 = 0xdeadbeef, h2 = 0x41c6ce57; for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); } h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909); return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36); }
 
 /* ---------------- Fish Audio (your own cloned voices) ---------------- */
 function u8ToB64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
@@ -1004,7 +1068,7 @@ const Fish = {
     });
   },
   onEvent(ev) {
-    const p = this.pend.get(ev.reqId); if (!p) { if (ev.ok && ev.bytes) Out.drop(ev.reqId); return; }
+    const p = this.pend.get(ev.reqId); if (!p) return;
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(new HttpError(ev.status || 0, ev.msg || 'Fish Audio error'));
   },
@@ -1018,11 +1082,12 @@ const Fish = {
     if (!r.ok) throw new HttpError(r.status, (await r.text()).slice(0, 200));
     return (await r.json())._id;
   },
-  async speak(text, voiceId, mood) {
+  async speak(text, voiceId, mood, cacheKey) {
+    cacheKey = cacheKey || 'fishpv|' + voiceId + '|' + hashText(text + (mood?.fishTag || ''));
     let tag = (mood && mood.fishTag || '').trim();
     if (tag && !/^\[.*\]$/.test(tag)) tag = '[' + tag.replace(/^[\[(]|[\])]$/g, '') + ']';
     const body = JSON.stringify({ text: (tag ? tag + ' ' : '') + text, reference_id: voiceId, format: 'pcm', sample_rate: this.RATE, latency: 'normal', normalize: true });
-    if (NATIVE) { const ev = await this.call('Tts', S.fishKey, S.fishModel, body); return { store: ev.reqId, rate: this.RATE }; }
+    if (NATIVE) { await this.call('Tts', cacheKey, S.fishKey, S.fishModel, body); return { store: cacheKey, rate: this.RATE }; }
     const r = await fetch('https://api.fish.audio/v1/tts', { method: 'POST', headers: { Authorization: 'Bearer ' + S.fishKey, 'Content-Type': 'application/json', model: S.fishModel }, body });
     if (!r.ok) { let m = ''; try { m = (await r.json()).message; } catch {} throw new HttpError(r.status, m || 'HTTP ' + r.status); }
     return { b64: u8ToB64(new Uint8Array(await r.arrayBuffer())), rate: this.RATE };
@@ -1100,15 +1165,16 @@ function splitSentences(t, max) {
   if (cur.trim()) out.push(cur.trim());
   return out;
 }
-function buildUnits(paras) {
-  const units = []; let cur = null;
+const GEM_LONG = 3000;   // ~3.5 minutes of speech per Gemini request
+function buildUnits(paras, max = MAX_UNIT) {
+  const units = []; let cur = null, long = max > MAX_UNIT;
   const flush = () => { if (cur) units.push(cur); cur = null; };
+  const add = (i, t) => { if (cur && cur.text.length + t.length + 1 <= max) { cur.text += '\n' + t; cur.p1 = i; } else { flush(); cur = { p0: i, p1: i, text: t }; } };
   paras.forEach((raw, i) => {
-    if (raw === SCENE) { flush(); units.push({ p0: i, p1: i, scene: true, text: '' }); return; }
-    if (raw[0] === HEAD) { flush(); const t = raw.slice(1); units.push({ p0: i, p1: i, head: true, text: /[.!?:]$/.test(t) ? t : t + '.' }); return; }
-    if (raw.length > MAX_UNIT) { flush(); splitSentences(raw, MAX_UNIT).forEach(s => units.push({ p0: i, p1: i, text: s })); return; }
-    if (cur && cur.text.length + raw.length + 1 <= MAX_UNIT) { cur.text += '\n' + raw; cur.p1 = i; }
-    else { flush(); cur = { p0: i, p1: i, text: raw }; }
+    if (raw === SCENE) { if (long) { if (cur) cur.p1 = i; return; } flush(); units.push({ p0: i, p1: i, scene: true, text: '' }); return; }
+    if (raw[0] === HEAD) { const t = raw.slice(1), ht = /[.!?:]$/.test(t) ? t : t + '.'; if (long) { add(i, ht); return; } flush(); units.push({ p0: i, p1: i, head: true, text: ht }); return; }
+    if (raw.length > max) { flush(); splitSentences(raw, max).forEach(s => units.push({ p0: i, p1: i, text: s })); return; }
+    add(i, raw);
   });
   flush();
   return units;
@@ -1121,7 +1187,18 @@ const P = {
 
   get mood() { return moodById(this.meta?.moodId || 'story'); },
   included() { return this.meta.include.map((v, i) => v ? i : -1).filter(i => i >= 0); },
-  unitsFor(ch) { if (!this.unitsCache.has(ch)) this.unitsCache.set(ch, buildUnits(this.content.chapters[ch].paras)); return this.unitsCache.get(ch); },
+  size: MAX_UNIT,
+  sizeFor(eng) { return eng === 'gemini' && S.gemLong !== false ? GEM_LONG : MAX_UNIT; },
+  unitsFor(ch, size = this.size) { const k = ch + ':' + size; if (!this.unitsCache.has(k)) this.unitsCache.set(k, buildUnits(this.content.chapters[ch].paras, size)); return this.unitsCache.get(k); },
+  // Switch passage size (long for Gemini, short otherwise) while keeping the reading position
+  adapt(eng) {
+    const want = this.sizeFor(eng);
+    if (want === this.size || !this.content) return;
+    const p = this.units[this.u]?.p0 ?? 0;
+    this.size = want; this.units = this.unitsFor(this.ch);
+    const u = this.units.findIndex(x => x.p1 >= p); this.u = u < 0 ? 0 : u;
+    this.highlight();
+  },
 
   async open(id, autoplay) {
     if (this.meta && this.meta.id === id) { showPlayer(true); if (autoplay && !this.playing) this.play(); return; }
@@ -1139,7 +1216,7 @@ const P = {
     updateMini();
   },
   loadChapter(ch, para = 0) {
-    this.ch = ch; this.units = this.unitsFor(ch);
+    this.ch = ch; this.size = this.sizeFor(this.engine()); this.units = this.unitsFor(ch);
     let u = this.units.findIndex(x => x.p1 >= para); this.u = u < 0 ? 0 : u;
     renderReader(); this.highlight(true); this.trimCache();
   },
@@ -1165,19 +1242,20 @@ const P = {
     if (S.engine === 'system' || !navigator.onLine) return 'system';
     const now = Date.now();
     if (this.narrator() && S.fishKey && now >= this.fishOffUntil) return 'fish';
-    if (S.apiKey && now >= this.gemOffUntil) return 'gemini';
+    if (S.apiKey && now >= this.gemOffUntil && Gem.available()) return 'gemini';
     return 'system';
   },
   key(ch, u, eng) {
-    const m = this.mood;
-    return eng === 'fish' ? `${ch}:${u}:fish|${this.meta.narrator}|${m.fishTag || ''}|${S.fishModel}`
-      : `${ch}:${u}:gem|${m.voice}|${m.style}|${this.meta.note || ''}|${S.ttsModel}`;
+    const m = this.mood, unit = this.unitsFor(ch)[u], th = hashText(unit ? unit.text : '');
+    return eng === 'fish' ? `fish|${th}|${this.meta.narrator}|${m.fishTag || ''}|${S.fishModel}`
+      : `gem|${th}|${m.voice}|${m.style}|${this.meta.note || ''}`;
   },
   audioFor(ch, u, eng) {
     const unit = this.unitsFor(ch)[u];
     const k = this.key(ch, u, eng);
     if (this.cache.has(k)) return this.cache.get(k);
-    const pr = eng === 'fish' ? Fish.speak(unit.text, this.meta.narrator, this.mood) : geminiSpeak(unit.text, this.mood, this.meta.note || '');
+    const pr = NATIVE && NATIVE.cacheHas(k) ? Promise.resolve({ store: k, rate: 24000, saved: true })
+      : eng === 'fish' ? Fish.speak(unit.text, this.meta.narrator, this.mood, k) : Gem.speak(unit.text, this.mood, this.meta.note || '', k);
     pr.catch(() => this.cache.delete(k));
     this.cache.set(k, pr);
     return pr;
@@ -1186,8 +1264,8 @@ const P = {
     const eng = this.engine();
     if (eng === 'system') return;
     let ch = this.ch, u = this.u, n = 0;
-    const inc = this.included();
-    while (n < S.prefetch) {
+    const inc = this.included(), ahead = this.size > MAX_UNIT ? 1 : S.prefetch;
+    while (n < ahead) {
       u++;
       if (u >= this.unitsFor(ch).length) { const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
       const unit = this.unitsFor(ch)[u];
@@ -1211,7 +1289,8 @@ const P = {
 
   async step() {
     const tok = ++this.token;
-    const unit = this.units[this.u];
+    this.adapt(this.engine());
+    let unit = this.units[this.u];
     if (!unit) return this.nextChapter(true);
     this.highlight(); this.savePos(); this.trimCache();
     if (this.sleepAt && Date.now() >= this.sleepAt) { this.sleepAt = 0; renderSleepChip(); this.pause(); toast('Sleep timer: paused'); return; }
@@ -1219,9 +1298,10 @@ const P = {
     if (unit.scene) { this.curId = 'u' + tok; Out.silence(this.curId, 1000); return; }
     const m = this.mood, speed = S.speed;
     const pauseMs = unit.head ? 650 : 0;
-    for (let tries = 0; tries < 2; tries++) {
+    for (let tries = 0; tries < 3; tries++) {
       const eng = this.engine();
       if (eng === 'system') break;
+      this.adapt(eng); unit = this.units[this.u];
       if (!this.cache.has(this.key(this.ch, this.u, eng))) setEngineChip('loading');
       try {
         const a = await this.audioFor(this.ch, this.u, eng);
@@ -1241,9 +1321,11 @@ const P = {
       }
     }
     if (S.engine === 'gemini' && (S.apiKey || this.narrator())) { this.pause(); toast('AI voice unavailable. Switch to "AI voice + backup" to keep listening offline.', 4500); return; }
+    this.adapt('system'); unit = this.units[this.u];
+    if (unit.scene) { this.curId = 'u' + tok; Out.silence(this.curId, 1000); return; }
     this.curId = 'u' + tok;
     Sync.prepare(unit, this.curId, clamp(m.pace * speed, 0.3, 3));
-    Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, pauseMs || 120);
+    Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, unit.head ? 650 : 120);
     setEngineChip('system');
     if (this.lastEngine && this.lastEngine !== 'system') toast('Switched to the built-in voice');
     this.lastEngine = 'system';
@@ -1251,7 +1333,8 @@ const P = {
   engineFailed(eng, e) {
     const st = e.status || 0, name = eng === 'fish' ? 'Fish Audio' : 'Gemini';
     let wait = 30000, msg = `${name} is unavailable right now`;
-    if (st === 429) { wait = 90000; msg = `${name} rate limit reached`; }
+    if (e.daily) { wait = Math.max(60000, Gem.resetAt() - Date.now()); msg = `All Gemini voices have used today's free allowance. Back at ${fmtTime(Gem.resetAt())}.`; }
+    else if (st === 429) { wait = 90000; msg = `${name} rate limit reached`; }
     else if (st === 402) { wait = 30 * 60000; msg = `${name}: ${(e.message || 'payment required').slice(0, 120)}`; }
     else if (st === 400 || st === 401 || st === 403 || st === 404) { wait = 15 * 60000; msg = `${name} rejected the request: ${(e.message || st).toString().slice(0, 120)}`; }
     if (eng === 'fish') this.fishOffUntil = Date.now() + wait; else this.gemOffUntil = Date.now() + wait;
@@ -1340,6 +1423,7 @@ function onNative(ev) {
     case 'done': if (ev.id === Preview.id) Preview.done(); else P.onDone(ev.id); break;
     case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else P.onError(ev.id, ev.msg); break;
     case 'fish': Fish.onEvent(ev); break;
+    case 'gem': Gem.onEvent(ev); break;
     case 'start': Sync.start(ev.id, ev.dur); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
@@ -1586,7 +1670,7 @@ const Sync = {
       el.innerHTML = html;
       el.querySelectorAll('span.w').forEach(w => { const o = +w.dataset.o; if (o >= 0 && o < this.len + 1) mine.push(w); });
       this.words.push(...mine);
-      cum += T.length + 1;
+      cum += T.length + 1 + (raw[0] === HEAD && !/[.!?:]$/.test(T) ? 1 : 0);
     }
   },
   start(id, dur) {
@@ -1643,7 +1727,7 @@ function setEngineChip(state) {
   const c = $('#chEngine');
   const eng = P.engine();
   const label = state === 'loading' ? `<span class="dot l"></span> Preparing voice…`
-    : state === 'gemini' ? `<span class="dot g"></span> Gemini · ${esc(P.mood.voice)}`
+    : state === 'gemini' ? `<span class="dot g"></span> ${esc(gemShort(Gem.current || Gem.available() || S.ttsModel).replace('Gemini ', ''))} · ${esc(P.mood.voice)}`
     : state === 'fish' ? `<span class="dot g"></span> ${esc(P.narrator()?.name || 'Your voice')}`
     : state === 'system' ? `<span class="dot s"></span> Built-in voice`
     : eng === 'fish' ? `<span class="dot"></span> ${esc(P.narrator()?.name || 'Your voice')}`
@@ -1886,6 +1970,14 @@ function renderSettings() {
       <input id="sText" value="${esc(S.textModel)}">
       <button class="btn block" id="sTest" style="margin-top:14px">Test Gemini voice</button>
     </div>
+    <h2>Saving your Gemini allowance</h2>
+    <div class="card" style="padding:0 14px">
+      <div class="set"><div class="grow">Passage length<div class="small muted">Long passages (about 3½ minutes each) use about 5× fewer requests. Short ones start faster.</div></div>
+        <div class="seg" id="sLen" style="width:150px"><button data-l="1" class="${S.gemLong !== false ? 'on' : ''}">Long</button><button data-l="0" class="${S.gemLong === false ? 'on' : ''}">Short</button></div></div>
+      <div class="set"><div class="grow">Use other Gemini models when one runs out<div class="small muted">Each voice model has its own daily free allowance</div></div><button class="tog ${S.gemChain !== false ? 'on' : ''}" data-b="gemChain"></button></div>
+      <div class="set"><div class="grow" id="sQuota"></div></div>
+      <div class="set"><div class="grow">Saved audio<div class="small muted" id="sCache">Passages already generated are kept so replaying them is free</div></div><button class="btn" id="sCacheClear">Clear</button></div>
+    </div>
     <h2>Your own voices (Fish Audio)</h2>
     <div class="card">
       <label class="f" style="margin-top:0">Fish Audio API key</label>
@@ -1916,6 +2008,16 @@ function renderSettings() {
   $('#sModelCustom').onchange = e => { if (e.target.value.trim()) { S.ttsModel = e.target.value.trim(); saveSettings(); P.clearCache(); P.gemOffUntil = 0; } };
   $('#sText').onchange = e => { S.textModel = e.target.value.trim() || DEFAULT_SETTINGS.textModel; saveSettings(); };
   $('#sTest').onclick = e => { S.apiKey = $('#sKey').value.trim(); saveSettings(); Preview.run({ ...moodById('story'), sample: 'Hello, I\'m your BookTalk narrator. Shall we begin?' }, 'gemini', e.currentTarget); };
+  const quota = () => {
+    const now = Date.now(), out = Gem.chain().filter(m => GEM_OUT[m] > now);
+    $('#sQuota').innerHTML = `Today's free allowance<div class="small muted">${Gem.chain().map(m => `${esc(gemShort(m))}: ${GEM_OUT[m] > now ? 'used up until ' + fmtTime(GEM_OUT[m]) : 'available'}`).join('<br>')}</div>` +
+      (out.length ? '<button class="btn ghost" id="sQReset" style="margin-top:8px">Try again now</button>' : '');
+    $('#sQReset')?.addEventListener('click', () => { GEM_OUT = {}; LS.set('gemOut', GEM_OUT); P.gemOffUntil = 0; quota(); });
+  };
+  quota();
+  if (NATIVE?.cacheMB) $('#sCache').textContent = `${NATIVE.cacheMB().toFixed(0)} MB of generated speech kept, so replaying it is free`;
+  $('#sCacheClear').onclick = () => { if (NATIVE?.cacheClear) NATIVE.cacheClear(); P.clearCache(); toast('Saved audio cleared'); if (NATIVE?.cacheMB) $('#sCache').textContent = '0 MB of generated speech kept'; };
+  $$('#sLen [data-l]').forEach(b => b.onclick = () => { S.gemLong = b.dataset.l === '1'; saveSettings(); $$('#sLen [data-l]').forEach(x => x.classList.toggle('on', x === b)); P.clearCache(); P.restartUnit(); });
   $('#sFish').onchange = e => { S.fishKey = e.target.value.trim(); saveSettings(); P.fishOffUntil = 0; };
   $('#sFishShow').onclick = () => { const k = $('#sFish'); k.type = k.type === 'password' ? 'text' : 'password'; };
   $('#sFishModel').onchange = e => { S.fishModel = e.target.value; saveSettings(); P.fishOffUntil = 0; P.clearCache(); };
