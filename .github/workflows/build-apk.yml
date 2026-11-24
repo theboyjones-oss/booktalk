@@ -26,40 +26,18 @@ jobs:
         with:
           name: BookTalk-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Check signing secret
-        id: sec
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || vars.KEYSTORE_PASSWORD }}
-        run: |
-          if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "::warning::Add the KEYSTORE_PASSWORD repository secret (Settings > Secrets and variables > Actions) to get the signed release APK."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          elif ! keytool -list -keystore app/booktalk-release.jks -storepass "$KEYSTORE_PASSWORD" >/dev/null 2>&1; then
-            echo "::error::KEYSTORE_PASSWORD is set but doesn't unlock app/booktalk-release.jks. Check it was pasted exactly (no spaces or line breaks)."
-            exit 1
-          else
-            echo "Signing password found and it unlocks the keystore."
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
       - name: Build release APK
-        if: steps.sec.outputs.ok == 'true'
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || vars.KEYSTORE_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon
       - name: Rename APK
-        if: steps.sec.outputs.ok == 'true'
         run: cp app/build/outputs/apk/release/app-release.apk BookTalk.apk
       - name: Read app version
-        if: steps.sec.outputs.ok == 'true'
         id: ver
         run: echo "name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
-      - if: steps.sec.outputs.ok == 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: BookTalk-apk
           path: BookTalk.apk
       - name: Publish release
-        if: steps.sec.outputs.ok == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.name }}-build-${{ github.run_number }}

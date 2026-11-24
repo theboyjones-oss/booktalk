@@ -17,10 +17,10 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("booktalk-release.jks")
-            // Keystore is password-protected; the password lives only in the KEYSTORE_PASSWORD repo secret
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            // Sideload key with Android's standard public debug password (not a secret)
+            storePassword = "android"
             keyAlias = "booktalk"
-            keyPassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+            keyPassword = "android"
         }
     }
 

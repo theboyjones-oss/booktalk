@@ -28,11 +28,7 @@ app/src/main/java/com/booktalk/app/
 
 ## Building the APK (GitHub Actions)
 
-1. Create a repo (e.g. `theboyjones-oss/booktalk`) and push this folder to `main`.
-2. In the repo go to **Settings → Secrets and variables → Actions** and add a secret called `KEYSTORE_PASSWORD` with the password for `app/booktalk-release.jks`.
-3. The **Build APK** workflow runs on push. When it finishes, `BookTalk.apk` is attached to a new Release.
-
-Keep the same keystore and password, otherwise future builds won't install over the old one.
+Every push to `main` builds `BookTalk.apk` and attaches it to a new Release. The app is signed with `app/booktalk-release.jks`, a sideload key that uses Android's standard public debug password (`android`). Keep this keystore so new builds install over old ones.
 
 ## Trying it on a computer
 
