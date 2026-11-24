@@ -29,18 +29,22 @@ jobs:
       - name: Check signing secret
         id: sec
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || vars.KEYSTORE_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_PASSWORD" ]; then
             echo "::warning::Add the KEYSTORE_PASSWORD repository secret (Settings > Secrets and variables > Actions) to get the signed release APK."
             echo "ok=false" >> "$GITHUB_OUTPUT"
+          elif ! keytool -list -keystore app/booktalk-release.jks -storepass "$KEYSTORE_PASSWORD" >/dev/null 2>&1; then
+            echo "::error::KEYSTORE_PASSWORD is set but doesn't unlock app/booktalk-release.jks. Check it was pasted exactly (no spaces or line breaks)."
+            exit 1
           else
+            echo "Signing password found and it unlocks the keystore."
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Build release APK
         if: steps.sec.outputs.ok == 'true'
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || vars.KEYSTORE_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon
       - name: Rename APK
         if: steps.sec.outputs.ok == 'true'
