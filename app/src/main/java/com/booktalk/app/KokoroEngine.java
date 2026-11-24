@@ -312,7 +312,7 @@ public class KokoroEngine {
                 for (Job j : queue) if (key.equals(j.key)) { mine = j; break; }
                 for (Job j : queue) if (j != mine) {
                     if (j.reqId != null) events.prepared(j.reqId, false, "cancelled");
-                    synchronized (j) { for (String id : j.waiters) events.prepared(id, false, "cancelled"); }
+                    synchronized (j) { for (String w : j.waiters) events.prepared(w, false, "cancelled"); }
                 }
                 queue.clear();
                 if (mine == null) { mine = new Job(); mine.key = key; mine.text = text; mine.sid = sid; mine.voice = voice; }
