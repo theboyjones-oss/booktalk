@@ -167,7 +167,11 @@ a{color:var(--ac2)}
   <!-- VOICES -->
   <section class="view" id="v-voices">
     <header class="top"><h1>Voices</h1><button class="iconbtn" id="newMood" title="New mood"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg></button></header>
-    <p class="muted small" style="margin-top:0">Each mood sets how BookTalk reads. Gemini voices follow the delivery notes. Built-in voices use the pitch and pace sliders. Tap a mood to edit it.</p>
+    <p class="muted small" style="margin-top:0">Add your own voices, then shape how books are read with moods. Tap a mood to edit it.</p>
+    <h2 style="margin-top:6px">Your voices</h2>
+    <div id="cloneList"></div>
+    <button class="btn block" id="addVoice" style="margin-bottom:6px">🎙️ Add a voice</button>
+    <h2>Moods</h2>
     <div id="moodList"></div>
     <button class="btn ghost block" id="resetMoods" style="margin-top:8px">Restore default moods</button>
   </section>
@@ -295,6 +299,8 @@ const LS = {
 const DEFAULT_SETTINGS = {
   engine: 'auto',            // auto = Gemini with built-in fallback | gemini | system
   apiKey: '',
+  fishKey: '',
+  fishModel: 's2.1-pro-free',
   ttsModel: 'gemini-3.1-flash-tts-preview',
   textModel: 'gemini-2.5-flash',
   sysVoice: '',
@@ -316,16 +322,19 @@ const GEMINI_VOICES = [
   ['Sadachbia','Lively'],['Sadaltager','Knowledgeable'],
 ];
 const DEFAULT_MOODS = [
-  { id:'story', name:'Storyteller', icon:'📖', voice:'Sulafat', style:'in a warm, engaging audiobook-narrator voice, unhurried, with natural expression', pitch:1, pace:1, sysVoice:'' },
-  { id:'serious', name:'Serious', icon:'🎙️', voice:'Charon', style:'in a calm, serious, authoritative tone at a measured pace, like a documentary narrator', pitch:0.94, pace:0.95, sysVoice:'' },
-  { id:'funny', name:'Funny', icon:'😄', voice:'Puck', style:'in a light, playful, amused tone with sharp comic timing and a smile in the voice', pitch:1.08, pace:1.05, sysVoice:'' },
-  { id:'somber', name:'Somber', icon:'🕯️', voice:'Gacrux', style:'slowly, in a quiet, somber, reflective tone with gentle pauses, as if reading something sad', pitch:0.9, pace:0.88, sysVoice:'' },
-  { id:'spooky', name:'Spooky', icon:'👻', voice:'Enceladus', style:'in a low, hushed, suspenseful voice that builds dread, like a ghost story told by candlelight', pitch:0.88, pace:0.9, sysVoice:'' },
-  { id:'thriller', name:'Thriller', icon:'⚡', voice:'Alnilam', style:'in a tense, urgent, gripping tone with dramatic emphasis, like a thriller audiobook', pitch:1, pace:1.06, sysVoice:'' },
-  { id:'bedtime', name:'Bedtime', icon:'🌙', voice:'Vindemiatrix', style:'softly and soothingly, slow and gentle, like a bedtime story read to a sleepy child', pitch:1.02, pace:0.85, sysVoice:'' },
+  { id:'story', name:'Storyteller', icon:'📖', voice:'Sulafat', style:'in a warm, engaging audiobook-narrator voice, unhurried, with natural expression', pitch:1, pace:1, fishTag:'', sysVoice:'' },
+  { id:'serious', name:'Serious', icon:'🎙️', voice:'Charon', style:'in a calm, serious, authoritative tone at a measured pace, like a documentary narrator', pitch:0.94, pace:0.95, fishTag:'', sysVoice:'' },
+  { id:'funny', name:'Funny', icon:'😄', voice:'Puck', style:'in a light, playful, amused tone with sharp comic timing and a smile in the voice', pitch:1.08, pace:1.05, fishTag:'[amused]', sysVoice:'' },
+  { id:'somber', name:'Somber', icon:'🕯️', voice:'Gacrux', style:'slowly, in a quiet, somber, reflective tone with gentle pauses, as if reading something sad', pitch:0.9, pace:0.88, fishTag:'[sad, quiet and reflective]', sysVoice:'' },
+  { id:'spooky', name:'Spooky', icon:'👻', voice:'Enceladus', style:'in a low, hushed, suspenseful voice that builds dread, like a ghost story told by candlelight', pitch:0.88, pace:0.9, fishTag:'[hushed, suspenseful]', sysVoice:'' },
+  { id:'thriller', name:'Thriller', icon:'⚡', voice:'Alnilam', style:'in a tense, urgent, gripping tone with dramatic emphasis, like a thriller audiobook', pitch:1, pace:1.06, fishTag:'[tense]', sysVoice:'' },
+  { id:'bedtime', name:'Bedtime', icon:'🌙', voice:'Vindemiatrix', style:'softly and soothingly, slow and gentle, like a bedtime story read to a sleepy child', pitch:1.02, pace:0.85, fishTag:'[soft and soothing]', sysVoice:'' },
 ];
 let MOODS = LS.get('moods', null) || JSON.parse(JSON.stringify(DEFAULT_MOODS));
 const saveMoods = () => LS.set('moods', MOODS);
+MOODS.forEach(m => { if (m.fishTag === undefined) m.fishTag = (DEFAULT_MOODS.find(d => d.id === m.id) || {}).fishTag || ''; });
+let CLONES = LS.get('clones', []);   // your own voices: [{id (Fish model id), name, added}]
+const saveClones = () => LS.set('clones', CLONES);
 const moodById = id => MOODS.find(m => m.id === id) || MOODS[0];
 
 /* ---------------- Text helpers ---------------- */
@@ -957,6 +966,70 @@ async function geminiSpeak(text, mood, note, signal) {
   return { b64: part.inlineData.data, rate };
 }
 
+/* ---------------- Fish Audio (your own cloned voices) ---------------- */
+function u8ToB64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+async function blobToB64(blob) { return u8ToB64(new Uint8Array(await blob.arrayBuffer())); }
+// Any recording/audio file -> mono 16-bit WAV at 24 kHz, max 60 s
+async function toWav(blob, maxSec = 60) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let buf;
+  try { buf = await ctx.decodeAudioData(await blob.arrayBuffer()); } finally { try { ctx.close(); } catch {} }
+  const rate = 24000, len = Math.min(Math.ceil(buf.duration * rate), maxSec * rate);
+  const off = new OfflineAudioContext(1, len, rate);
+  const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+  const out = (await off.startRendering()).getChannelData(0);
+  let peak = 0; for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+  const gain = peak > 0.01 ? Math.min(0.9 / peak, 8) : 1;
+  const ab = new ArrayBuffer(44 + out.length * 2), dv = new DataView(ab);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); dv.setUint32(4, 36 + out.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
+  dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, out.length * 2, true);
+  for (let i = 0; i < out.length; i++) dv.setInt16(44 + i * 2, clamp(out[i] * gain, -1, 1) * 32767, true);
+  return { wav: new Blob([ab], { type: 'audio/wav' }), seconds: out.length / rate };
+}
+const Fish = {
+  RATE: 24000,
+  pend: new Map(),
+  call(kind, ...args) {
+    return new Promise((res, rej) => {
+      const id = 'f' + uid();
+      const t = setTimeout(() => { if (this.pend.delete(id)) rej(new HttpError(0, 'Fish Audio timed out')); }, 150000);
+      this.pend.set(id, { res: v => { clearTimeout(t); res(v); }, rej: e => { clearTimeout(t); rej(e); } });
+      NATIVE['fish' + kind](id, ...args);
+    });
+  },
+  onEvent(ev) {
+    const p = this.pend.get(ev.reqId); if (!p) { if (ev.ok && ev.bytes) Out.drop(ev.reqId); return; }
+    this.pend.delete(ev.reqId);
+    ev.ok ? p.res(ev) : p.rej(new HttpError(ev.status || 0, ev.msg || 'Fish Audio error'));
+  },
+  async create(name, wav) {
+    if (!S.fishKey) throw new Error('Add your Fish Audio API key first');
+    if (NATIVE) { const ev = await this.call('Create', S.fishKey, name, await blobToB64(wav)); return JSON.parse(ev.body)._id; }
+    const fd = new FormData();
+    [['type', 'tts'], ['title', name], ['train_mode', 'fast'], ['visibility', 'private'], ['enhance_audio_quality', 'true']].forEach(([k, v]) => fd.append(k, v));
+    fd.append('voices', wav, 'voice.wav');
+    const r = await fetch('https://api.fish.audio/model', { method: 'POST', headers: { Authorization: 'Bearer ' + S.fishKey }, body: fd });
+    if (!r.ok) throw new HttpError(r.status, (await r.text()).slice(0, 200));
+    return (await r.json())._id;
+  },
+  async speak(text, voiceId, mood) {
+    let tag = (mood && mood.fishTag || '').trim();
+    if (tag && !/^\[.*\]$/.test(tag)) tag = '[' + tag.replace(/^[\[(]|[\])]$/g, '') + ']';
+    const body = JSON.stringify({ text: (tag ? tag + ' ' : '') + text, reference_id: voiceId, format: 'pcm', sample_rate: this.RATE, latency: 'normal', normalize: true });
+    if (NATIVE) { const ev = await this.call('Tts', S.fishKey, S.fishModel, body); return { store: ev.reqId, rate: this.RATE }; }
+    const r = await fetch('https://api.fish.audio/v1/tts', { method: 'POST', headers: { Authorization: 'Bearer ' + S.fishKey, 'Content-Type': 'application/json', model: S.fishModel }, body });
+    if (!r.ok) { let m = ''; try { m = (await r.json()).message; } catch {} throw new HttpError(r.status, m || 'HTTP ' + r.status); }
+    return { b64: u8ToB64(new Uint8Array(await r.arrayBuffer())), rate: this.RATE };
+  },
+  remove(id) {
+    if (!S.fishKey) return;
+    if (NATIVE) NATIVE.fishDelete(S.fishKey, id);
+    else fetch('https://api.fish.audio/model/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + S.fishKey } }).catch(() => {});
+  },
+};
+
 /* ---------------- Audio output (native on Android, Web APIs in a browser) ---------------- */
 const Out = {
   webCtx: null, webSrc: null, voices: [],
@@ -986,6 +1059,11 @@ const Out = {
     src.onended = () => { if (this.webSrc === src) { this.webSrc = null; setTimeout(() => onNative({ type: 'done', id }), pauseMs); } };
     this.webSrc = src; src.start();
   },
+  play(id, a, speed, pauseMs = 0) {
+    if (a.store) { NATIVE.playStored(id, a.store, a.rate, speed, pauseMs); return; }
+    this.pcm(id, a.b64, a.rate, speed, pauseMs);
+  },
+  drop(key) { if (NATIVE && key) NATIVE.dropStored(key); },
   stopWeb() { clearTimeout(this.silT); if (this.webSrc) { const s = this.webSrc; this.webSrc = null; try { s.stop(); } catch {} } },
   stop() {
     if (NATIVE) { NATIVE.stopAll(); return; }
@@ -1032,7 +1110,7 @@ function buildUnits(paras) {
 
 const P = {
   meta: null, content: null, ch: 0, units: [], u: 0, playing: false, curId: null, token: 0,
-  cache: new Map(), unitsCache: new Map(), gemOffUntil: 0, lastEngine: '', loading: false,
+  cache: new Map(), unitsCache: new Map(), gemOffUntil: 0, fishOffUntil: 0, lastEngine: '', loading: false,
   sleepAt: 0, sleepChapter: false, active: 0,
 
   get mood() { return moodById(this.meta?.moodId || 'story'); },
@@ -1044,7 +1122,7 @@ const P = {
     this.pause();
     const [meta, content] = await Promise.all([DB.get('meta', id), DB.get('content', id)]);
     if (!meta || !content) { toast('Book not found'); return; }
-    this.meta = meta; this.content = content; this.cache.clear(); this.unitsCache.clear();
+    this.meta = meta; this.content = content; this.clearCache(); this.unitsCache.clear();
     const inc = this.included();
     if (!inc.length) { toast('All chapters are switched off for this book'); return; }
     let ch = meta.pos?.ch ?? inc[0]; if (!meta.include[ch]) ch = inc.find(i => i >= ch) ?? inc[0];
@@ -1075,41 +1153,54 @@ const P = {
   close() { this.pause(); Out.session(false, false); },
   chapterTitle() { return this.content?.chapters[this.ch]?.title || ''; },
 
+  narrator() { const id = this.meta?.narrator; return id ? CLONES.find(c => c.id === id) || null : null; },
+  // Which engine to try first right now: 'fish' (your own voice), 'gemini' or 'system'
   engine() {
-    if (S.engine === 'system' || !S.apiKey) return 'system';
-    if (Date.now() < this.gemOffUntil || !navigator.onLine) return 'system';
-    return 'gemini';
+    if (S.engine === 'system' || !navigator.onLine) return 'system';
+    const now = Date.now();
+    if (this.narrator() && S.fishKey && now >= this.fishOffUntil) return 'fish';
+    if (S.apiKey && now >= this.gemOffUntil) return 'gemini';
+    return 'system';
   },
-  key(ch, u) { const m = this.mood; return `${ch}:${u}:${m.voice}|${m.style}|${this.meta.note || ''}|${S.ttsModel}`; },
-  audioFor(ch, u) {
-    const units = this.unitsFor(ch), unit = units[u];
-    const k = this.key(ch, u);
+  key(ch, u, eng) {
+    const m = this.mood;
+    return eng === 'fish' ? `${ch}:${u}:fish|${this.meta.narrator}|${m.fishTag || ''}|${S.fishModel}`
+      : `${ch}:${u}:gem|${m.voice}|${m.style}|${this.meta.note || ''}|${S.ttsModel}`;
+  },
+  audioFor(ch, u, eng) {
+    const unit = this.unitsFor(ch)[u];
+    const k = this.key(ch, u, eng);
     if (this.cache.has(k)) return this.cache.get(k);
-    const pr = geminiSpeak(unit.text, this.mood, this.meta.note || '');
+    const pr = eng === 'fish' ? Fish.speak(unit.text, this.meta.narrator, this.mood) : geminiSpeak(unit.text, this.mood, this.meta.note || '');
     pr.catch(() => this.cache.delete(k));
     this.cache.set(k, pr);
     return pr;
   },
   prefetch() {
-    if (this.engine() !== 'gemini') return;
+    const eng = this.engine();
+    if (eng === 'system') return;
     let ch = this.ch, u = this.u, n = 0;
     const inc = this.included();
     while (n < S.prefetch) {
       u++;
       if (u >= this.unitsFor(ch).length) { const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
       const unit = this.unitsFor(ch)[u];
-      if (!unit.scene) { this.audioFor(ch, u); n++; }
+      if (!unit.scene) { this.audioFor(ch, u, eng); n++; }
     }
   },
+  dropEntry(k) {
+    const pr = this.cache.get(k); this.cache.delete(k);
+    if (pr) pr.then(a => { if (a && a.store) Out.drop(a.store); }, () => {});
+  },
+  clearCache() { for (const k of [...this.cache.keys()]) this.dropEntry(k); },
   trimCache() {
     const keep = new Set();
     let ch = this.ch, u = this.u - 1; const inc = this.included();
     for (let n = 0; n < S.prefetch + 3; n++) {
-      if (u >= 0) keep.add(this.key(ch, u));
+      if (u >= 0) { keep.add(this.key(ch, u, 'fish')); keep.add(this.key(ch, u, 'gemini')); }
       u++; if (u >= this.unitsFor(ch).length) { const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
     }
-    keep.add(this.key(this.ch, this.u));
-    for (const k of [...this.cache.keys()]) if (!keep.has(k)) this.cache.delete(k);
+    for (const k of [...this.cache.keys()]) if (!keep.has(k)) this.dropEntry(k);
   },
 
   async step() {
@@ -1122,38 +1213,42 @@ const P = {
     if (unit.scene) { this.curId = 'u' + tok; Out.silence(this.curId, 1000); return; }
     const m = this.mood, speed = S.speed;
     const pauseMs = unit.head ? 650 : 0;
-    if (this.engine() === 'gemini') {
-      const cached = this.cache.has(this.key(this.ch, this.u));
-      if (!cached) setEngineChip('loading');
+    for (let tries = 0; tries < 2; tries++) {
+      const eng = this.engine();
+      if (eng === 'system') break;
+      if (!this.cache.has(this.key(this.ch, this.u, eng))) setEngineChip('loading');
       try {
-        const a = await this.audioFor(this.ch, this.u);
+        const a = await this.audioFor(this.ch, this.u, eng);
         if (tok !== this.token || !this.playing) return;
         this.curId = 'u' + tok;
-        Out.pcm(this.curId, a.b64, a.rate, clamp(m.pace * speed, 0.5, 2.5), pauseMs);
-        setEngineChip('gemini'); this.lastEngine = 'gemini';
+        Out.play(this.curId, a, clamp(m.pace * speed, 0.5, 2.5), pauseMs);
+        setEngineChip(eng);
+        if (this.lastEngine && this.lastEngine !== eng && eng === 'gemini' && this.narrator()) toast('Your voice is unavailable, using the Gemini voice');
+        this.lastEngine = eng;
         this.prefetch();
         return;
       } catch (e) {
         if (tok !== this.token || !this.playing) return;
-        this.geminiFailed(e);
-        if (S.engine === 'gemini') { this.pause(); return; }
+        this.engineFailed(eng, e);
+        if (S.engine === 'gemini' && this.engine() === 'system') { this.pause(); return; }
       }
     }
+    if (S.engine === 'gemini' && (S.apiKey || this.narrator())) { this.pause(); toast('AI voice unavailable. Switch to "AI voice + backup" to keep listening offline.', 4500); return; }
     this.curId = 'u' + tok;
     Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, pauseMs || 220);
     setEngineChip('system');
-    if (this.lastEngine === 'gemini') toast('Switched to the built-in voice');
+    if (this.lastEngine && this.lastEngine !== 'system') toast('Switched to the built-in voice');
     this.lastEngine = 'system';
   },
-  geminiFailed(e) {
-    const st = e.status || 0;
-    let wait = 30000, msg = 'Gemini is unavailable, using the built-in voice';
-    if (st === 429) { wait = 90000; msg = 'Gemini rate limit reached, using the built-in voice for a bit'; }
-    else if (st === 400 || st === 401 || st === 403) { wait = 15 * 60000; msg = 'Gemini rejected the request (' + (e.message || st).toString().slice(0, 80) + ')'; }
-    else if (st === 404) { wait = 15 * 60000; msg = 'Gemini voice model not found, check Settings'; }
-    this.gemOffUntil = Date.now() + wait;
-    this.cache.clear();
-    toast(S.engine === 'gemini' ? msg.replace(', using the built-in voice', '').replace(' for a bit', '') : msg, 4200);
+  engineFailed(eng, e) {
+    const st = e.status || 0, name = eng === 'fish' ? 'Fish Audio' : 'Gemini';
+    let wait = 30000, msg = `${name} is unavailable right now`;
+    if (st === 429) { wait = 90000; msg = `${name} rate limit reached`; }
+    else if (st === 402) { wait = 30 * 60000; msg = `${name}: ${(e.message || 'payment required').slice(0, 120)}`; }
+    else if (st === 400 || st === 401 || st === 403 || st === 404) { wait = 15 * 60000; msg = `${name} rejected the request: ${(e.message || st).toString().slice(0, 120)}`; }
+    if (eng === 'fish') this.fishOffUntil = Date.now() + wait; else this.gemOffUntil = Date.now() + wait;
+    this.clearCache();
+    toast(msg, 5000);
   },
   onDone(id) {
     if (id !== this.curId || !this.playing) return;
@@ -1236,6 +1331,7 @@ function onNative(ev) {
   switch (ev.type) {
     case 'done': if (ev.id === Preview.id) Preview.done(); else P.onDone(ev.id); break;
     case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else P.onError(ev.id, ev.msg); break;
+    case 'fish': Fish.onEvent(ev); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
     case 'media':
       if (ev.action === 'toggle') P.toggle();
@@ -1258,7 +1354,12 @@ const Preview = {
     if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Preparing…'; }
     this.btn = btn;
     try {
-      if (engine === 'gemini') {
+      if (engine === 'fish') {
+        if (!S.fishKey) { toast('Add your Fish Audio key in Settings first'); this.done(); return; }
+        const a = await Fish.speak(mood.sample || SAMPLE, mood.clone, mood);
+        if (this.id !== id) { if (a.store) Out.drop(a.store); return; }
+        Out.play(id, a, clamp(mood.pace * S.speed, 0.5, 2.5));
+      } else if (engine === 'gemini') {
         if (!S.apiKey) { toast('Add your Gemini API key in Settings first'); this.done(); return; }
         const a = await geminiSpeak(mood.sample || SAMPLE, mood, '');
         if (this.id !== id) return;
@@ -1373,6 +1474,16 @@ $('#fileIn').onchange = async e => {
   }
 };
 
+/* ---------------- Narrator picker (shared) ---------------- */
+function narratorChips(cur) {
+  return `<button class="chip ${!cur ? 'on' : ''}" data-n="">🎭 Mood voice</button>` +
+    CLONES.map(c => `<button class="chip ${c.id === cur ? 'on' : ''}" data-n="${c.id}">🗣️ ${esc(c.name)}</button>`).join('');
+}
+async function setNarrator(meta, id) {
+  meta.narrator = id || ''; await DB.put('meta', meta);
+  if (P.meta?.id === meta.id) { P.meta.narrator = meta.narrator; P.fishOffUntil = 0; P.clearCache(); renderPlayerMeta(); P.restartUnit(); }
+}
+
 /* ---------------- UI: book page ---------------- */
 async function openBook(id) {
   const m = await DB.get('meta', id); if (!m) return;
@@ -1389,6 +1500,9 @@ async function openBook(id) {
       <div class="small muted">${esc(a.summary || '')}</div>
       <label class="f">Reading mood</label>
       <div class="moods" id="bkMoods">${MOODS.map(x => `<button class="chip ${x.id === m.moodId ? 'on' : ''}" data-m="${x.id}">${x.icon} ${esc(x.name)}</button>`).join('')}</div>
+      <label class="f">Narrator</label>
+      <div class="moods" id="bkNarr">${narratorChips(m.narrator)}</div>
+      ${CLONES.length ? '' : `<div class="small muted">Want it read in your own voice? <a href="#" id="bkAddVoice">Add a voice</a> in the Voices tab.</div>`}
       <label class="f">Narrator's note <span style="font-weight:400">(Gemini voices only)</span></label>
       <textarea id="bkNote" rows="2" placeholder="e.g. Victorian gothic; give Dracula an Eastern European accent">${esc(m.note || '')}</textarea>
       ${S.apiKey ? `<button class="btn ghost" id="bkReanal" style="margin-top:10px">✨ Re-analyse with Gemini</button>` : ''}
@@ -1401,16 +1515,22 @@ async function openBook(id) {
   $$('#bkMoods .chip').forEach(b => b.onclick = async () => {
     m.moodId = b.dataset.m; await DB.put('meta', m);
     $$('#bkMoods .chip').forEach(x => x.classList.toggle('on', x === b));
-    if (P.meta?.id === id) { P.meta.moodId = m.moodId; P.cache.clear(); renderPlayerMeta(); P.restartUnit(); }
+    if (P.meta?.id === id) { P.meta.moodId = m.moodId; P.clearCache(); renderPlayerMeta(); P.restartUnit(); }
   });
-  $('#bkNote').onchange = async e => { m.note = e.target.value.trim(); await DB.put('meta', m); if (P.meta?.id === id) { P.meta.note = m.note; P.cache.clear(); } };
+  $$('#bkNarr .chip').forEach(b => b.onclick = async () => {
+    await setNarrator(m, b.dataset.n);
+    $$('#bkNarr .chip').forEach(x => x.classList.toggle('on', x === b));
+    if (b.dataset.n && !S.fishKey) toast('Add your Fish Audio key in Settings to hear this voice');
+  });
+  $('#bkAddVoice')?.addEventListener('click', e => { e.preventDefault(); setTab('voices'); addVoiceSheet(); });
+  $('#bkNote').onchange = async e => { m.note = e.target.value.trim(); await DB.put('meta', m); if (P.meta?.id === id) { P.meta.note = m.note; P.clearCache(); } };
   $('#bkReanal')?.addEventListener('click', async () => {
     busy('Analysing with Gemini');
     try {
       const c = await DB.get('content', id);
       const res = await analyseGemini({ title: m.title, author: m.author, subject: m.subject, chapters: c.chapters.map((x, i) => ({ ...x, skip: !m.include[i] })) });
       m.analysis = res; m.moodId = res.mood; m.note = res.note; await DB.put('meta', m);
-      if (P.meta?.id === id) { P.meta.moodId = m.moodId; P.meta.note = m.note; P.meta.analysis = res; P.cache.clear(); }
+      if (P.meta?.id === id) { P.meta.moodId = m.moodId; P.meta.note = m.note; P.meta.analysis = res; P.clearCache(); }
       busy(false); openBook(id);
     } catch (e) { busy(false); toast(e.message); }
   });
@@ -1442,7 +1562,7 @@ function renderPlayerMeta() {
   $('#plTitle').textContent = P.meta.title;
   const inc = P.included();
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
-  const m = P.mood; $('#chMood').innerHTML = `${m.icon} ${esc(m.name)}`;
+  const m = P.mood, nar = P.narrator(); $('#chMood').innerHTML = `${m.icon} ${esc(m.name)}${nar ? ' · 🗣️ ' + esc(nar.name) : ''}`;
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
   if (!P.playing) setEngineChip('');
@@ -1457,7 +1577,9 @@ function setEngineChip(state) {
   const eng = P.engine();
   const label = state === 'loading' ? `<span class="dot l"></span> Preparing voice…`
     : state === 'gemini' ? `<span class="dot g"></span> Gemini · ${esc(P.mood.voice)}`
+    : state === 'fish' ? `<span class="dot g"></span> ${esc(P.narrator()?.name || 'Your voice')}`
     : state === 'system' ? `<span class="dot s"></span> Built-in voice`
+    : eng === 'fish' ? `<span class="dot"></span> ${esc(P.narrator()?.name || 'Your voice')}`
     : eng === 'gemini' ? `<span class="dot"></span> Gemini · ${esc(P.mood.voice)}` : `<span class="dot"></span> Built-in voice`;
   c.innerHTML = label;
 }
@@ -1497,12 +1619,13 @@ $('#plChapters').onclick = () => {
     sh.querySelector('.opt.on')?.scrollIntoView({ block: 'center' });
   });
 };
-$('#chMood').onclick = () => openSheet(`<h4>Reading mood</h4>${MOODS.map(m => `<button class="opt ${m.id === P.meta.moodId ? 'on' : ''}" data-m="${m.id}"><span class="ic">${m.icon}</span><span class="grow"><b>${esc(m.name)}</b><div class="small muted">${esc(m.voice)} · ${esc(m.style.slice(0, 70))}…</div></span></button>`).join('')}
+$('#chMood').onclick = () => openSheet(`<h4>Narrator</h4><div class="moods" id="shNarr">${narratorChips(P.meta.narrator)}</div><h4 style="margin-top:18px">Reading mood</h4>${MOODS.map(m => `<button class="opt ${m.id === P.meta.moodId ? 'on' : ''}" data-m="${m.id}"><span class="ic">${m.icon}</span><span class="grow"><b>${esc(m.name)}</b><div class="small muted">${esc(m.voice)} · ${esc(m.style.slice(0, 70))}…</div></span></button>`).join('')}
   <button class="btn ghost block" style="margin-top:12px" onclick="closeSheet();showPlayer(false);setTab('voices')">Edit moods</button>`, sh => {
   $$('[data-m]', sh).forEach(b => b.onclick = async () => {
-    P.meta.moodId = b.dataset.m; await DB.put('meta', P.meta); P.cache.clear();
+    P.meta.moodId = b.dataset.m; await DB.put('meta', P.meta); P.clearCache();
     closeSheet(); renderPlayerMeta(); P.restartUnit();
   });
+  $$('[data-n]', sh).forEach(b => b.onclick = async () => { closeSheet(); await setNarrator(P.meta, b.dataset.n); });
 });
 $('#chSpeed').onclick = () => {
   const speeds = [0.75, 0.85, 1, 1.1, 1.25, 1.5, 1.75, 2];
@@ -1521,13 +1644,13 @@ $('#chSleep').onclick = () => {
   });
 };
 $('#chEngine').onclick = () => {
-  const off = P.gemOffUntil > Date.now();
+  const off = P.gemOffUntil > Date.now() || P.fishOffUntil > Date.now();
   openSheet(`<h4>Voice engine</h4>
-    <div class="seg" id="engSeg">${[['auto', 'Gemini + backup'], ['gemini', 'Gemini only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-    <p class="small muted">${!S.apiKey ? 'No Gemini API key yet, so the built-in voice is used. Add one in Settings.' : off ? 'Gemini is paused after an error and will be retried shortly.' : 'Gemini voices need an internet connection. With Gemini + backup, BookTalk switches to the built-in voice if Gemini fails or you go offline.'}</p>
+    <div class="seg" id="engSeg">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <p class="small muted">${!S.apiKey && !S.fishKey ? 'No Gemini or Fish Audio key yet, so the built-in voice is used. Add one in Settings.' : off ? 'An AI voice is paused after an error and will be retried shortly.' : 'AI voices (your own voice via Fish Audio, or Gemini) need an internet connection. With AI voice + backup, BookTalk drops to the built-in voice if they fail or you go offline.'}</p>
     ${off ? '<button class="btn block" id="engRetry">Retry Gemini now</button>' : ''}`, sh => {
     $$('[data-e]', sh).forEach(b => b.onclick = () => { S.engine = b.dataset.e; saveSettings(); $$('[data-e]', sh).forEach(x => x.classList.toggle('on', x === b)); P.restartUnit(); setEngineChip(''); });
-    $('#engRetry', sh)?.addEventListener('click', () => { P.gemOffUntil = 0; closeSheet(); P.restartUnit(); });
+    $('#engRetry', sh)?.addEventListener('click', () => { P.gemOffUntil = 0; P.fishOffUntil = 0; closeSheet(); P.restartUnit(); });
   });
 };
 function updateMini() {
@@ -1539,7 +1662,86 @@ function updateMini() {
 }
 
 /* ---------------- UI: moods (voices tab) ---------------- */
+function renderClones() {
+  $('#cloneList').innerHTML = CLONES.length ? CLONES.map(c => `
+    <div class="card moodcard"><div class="ic">🗣️</div><div class="grow"><b>${esc(c.name)}</b>
+      <div class="st">Cloned voice · added ${new Date(c.added).toLocaleDateString('en-GB')}</div>
+      <div class="row" style="margin-top:10px"><button class="btn grow" data-pv="${c.id}">Preview</button><button class="btn ghost" data-del="${c.id}" style="color:var(--bad)">Delete</button></div></div></div>`).join('')
+    : `<p class="small muted" style="margin-top:0">Record or upload 20–30 seconds of someone talking, and BookTalk can read books in that voice. Uses Fish Audio's free voice model.</p>`;
+  $$('[data-pv]').forEach(b => b.onclick = e => Preview.run({ ...moodById('story'), clone: b.dataset.pv }, 'fish', e.currentTarget));
+  $$('[data-del]').forEach(b => b.onclick = () => {
+    const c = CLONES.find(x => x.id === b.dataset.del);
+    openSheet(`<h4>Delete “${esc(c.name)}”?</h4><p class="muted">Books using this voice will go back to the mood voice. It's also removed from your Fish Audio account.</p>
+      <div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="cdYes">Delete</button></div>`, sh => {
+      $('#cdYes', sh).onclick = async () => {
+        CLONES = CLONES.filter(x => x.id !== c.id); saveClones(); Fish.remove(c.id);
+        for (const m of await DB.all('meta')) if (m.narrator === c.id) { m.narrator = ''; await DB.put('meta', m); }
+        if (P.meta?.narrator === c.id) { P.meta.narrator = ''; P.clearCache(); renderPlayerMeta(); }
+        closeSheet(); renderClones();
+      };
+    });
+  });
+}
+const READ_ALOUD = 'On Saturday morning I walked down to the harbour to watch the boats come in. The wind was sharp, the gulls were noisy, and somebody had left a bright red bicycle leaning against the railings. I bought a coffee, sat on the wall, and wondered, not for the first time, why I don\'t do this more often. It\'s funny how the simplest mornings are the ones you remember.';
+function addVoiceSheet() {
+  let wav = null, rec = null, chunks = [], timer = null, t0 = 0, url = '';
+  openSheet(`<h4>Add a voice</h4>
+    ${S.fishKey ? '' : `<label class="f" style="margin-top:0">Fish Audio API key</label><input id="avKey" type="password" placeholder="Paste your Fish Audio API key"><p class="small muted">Free account and key at <a href="https://fish.audio/app/api-keys/" target="_blank">fish.audio/app/api-keys</a>.</p>`}
+    <label class="f">Name</label><input id="avName" placeholder="e.g. Me, Mum, Grandad" maxlength="40">
+    <label class="f">Sample (20–30 seconds of clear talking, little background noise)</label>
+    <div class="row"><button class="btn pri grow" id="avRec">● Record</button><button class="btn grow" id="avFile">Choose file</button></div>
+    <input type="file" id="avIn" class="hidden" accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac,.flac,.opus,.webm,.mp4">
+    <div class="card small" id="avRead" style="margin-top:10px;font-family:var(--serif);font-size:15px;line-height:1.5"><div class="muted small" style="font-family:var(--sans);margin-bottom:6px">If you're recording, read this aloud naturally:</div>${READ_ALOUD}</div>
+    <div id="avStatus" class="small muted" style="margin-top:10px"></div>
+    <audio id="avAudio" controls class="hidden" style="width:100%;margin-top:8px"></audio>
+    <label class="row small" style="margin-top:14px;gap:10px;align-items:flex-start"><input type="checkbox" id="avOk" style="width:auto;margin-top:2px"><span>This is my voice, or the person has agreed to me using their voice.</span></label>
+    <button class="btn pri block" id="avCreate" style="margin-top:14px" disabled>Create voice</button>`, sh => {
+    const st = $('#avStatus', sh), au = $('#avAudio', sh), ok = $('#avOk', sh), cr = $('#avCreate', sh);
+    const ready = () => cr.disabled = !(wav && ok.checked && $('#avName', sh).value.trim());
+    ok.onchange = ready; $('#avName', sh).oninput = ready;
+    const take = async blob => {
+      st.textContent = 'Processing…';
+      try {
+        const r = await toWav(blob);
+        if (r.seconds < 8) { st.textContent = `Only ${Math.round(r.seconds)} seconds. Aim for 20–30 seconds.`; wav = null; ready(); return; }
+        wav = r.wav; if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(wav);
+        au.src = url; au.classList.remove('hidden');
+        st.textContent = `✓ ${Math.round(r.seconds)} second sample ready${r.seconds >= 59 ? ' (trimmed to 60 s)' : ''}. Have a listen.`;
+      } catch (e) { st.textContent = 'Couldn\'t read that audio: ' + (e.message || e); wav = null; }
+      ready();
+    };
+    $('#avFile', sh).onclick = () => $('#avIn', sh).click();
+    $('#avIn', sh).onchange = e => { const f = e.target.files[0]; if (f) take(f); e.target.value = ''; };
+    $('#avRec', sh).onclick = async () => {
+      const b = $('#avRec', sh);
+      if (rec && rec.state === 'recording') { rec.stop(); return; }
+      try {
+        Out.stop(); if (P.playing) P.pause();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+        chunks = []; rec = new MediaRecorder(stream);
+        rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+        rec.onstop = () => { clearInterval(timer); stream.getTracks().forEach(t => t.stop()); b.textContent = '● Record again'; take(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); };
+        rec.start(); t0 = Date.now(); b.textContent = '■ Stop';
+        timer = setInterval(() => { const sec = Math.round((Date.now() - t0) / 1000); st.textContent = `Recording… ${sec}s ${sec < 20 ? '(keep going)' : '(sounds good, tap Stop when ready)'}`; if (sec >= 45) rec.stop(); }, 500);
+      } catch (e) { st.textContent = 'Microphone not available: ' + (e.message || e) + '. You can choose an audio file instead.'; }
+    };
+    cr.onclick = async () => {
+      const k = $('#avKey', sh); if (k) { if (!k.value.trim()) { toast('Paste your Fish Audio key first'); return; } S.fishKey = k.value.trim(); saveSettings(); }
+      const name = $('#avName', sh).value.trim();
+      cr.disabled = true; cr.textContent = 'Creating voice…';
+      try {
+        const id = await Fish.create(name, wav);
+        if (!id) throw new Error('No voice id returned');
+        CLONES.push({ id, name, added: Date.now() }); saveClones();
+        closeSheet(); renderClones(); toast(`“${name}” is ready. Pick it as the narrator on any book.`, 4000);
+      } catch (e) { cr.disabled = false; cr.textContent = 'Create voice'; st.textContent = 'Fish Audio said: ' + (e.message || e); }
+    };
+  });
+}
+$('#addVoice').onclick = addVoiceSheet;
+
 function renderMoods() {
+  renderClones();
   $('#moodList').innerHTML = MOODS.map(m => `
     <div class="card moodcard" data-id="${m.id}"><div class="ic">${m.icon}</div><div class="grow">
       <div class="row"><b class="grow">${esc(m.name)}</b><span class="small muted">${esc(m.voice)}</span></div>
@@ -1564,26 +1766,30 @@ function editMood(id, isNew) {
     <label class="f">Delivery (how the Gemini voice should read)</label>
     <textarea id="mdStyle" rows="3" placeholder="in a dry, deadpan tone, like a weary butler…">${esc(draft.style)}</textarea>
     <div class="moods" style="margin-top:8px">${['dry and deadpan', 'whispery and intimate', 'cheerful and bouncy', 'grave and slow', 'breathless with excitement', 'with a broad Yorkshire accent', 'like an old radio drama'].map(s => `<button class="chip" data-add="${s}">+ ${s}</button>`).join('')}</div>
-    ${sl('pace', 'Pace (both engines)', 0.6, 1.6, 0.02)}
+    <label class="f">Emotion tag for your own voices (Fish Audio)</label>
+    <input id="mdFish" value="${esc(draft.fishTag || '')}" placeholder="e.g. [sad], [whispering], [excited]; leave blank for none">
+    ${sl('pace', 'Pace (all voices)', 0.6, 1.6, 0.02)}
     ${sl('pitch', 'Pitch (built-in voice)', 0.6, 1.5, 0.02)}
     <label class="f">Built-in voice for this mood</label>
     <select id="mdSys"><option value="">Use default from Settings</option>${voices.map(v => `<option value="${esc(v.name)}" ${v.name === draft.sysVoice ? 'selected' : ''}>${esc(v.name)} · ${esc(v.lang)}${v.network ? ' · online' : ''}</option>`).join('')}</select>
     <label class="f">Preview text</label>
     <textarea id="mdSample" rows="2">${esc(draft.sample || SAMPLE)}</textarea>
     <div class="row" style="margin-top:12px"><button class="btn grow" id="pvG">✨ Gemini preview</button><button class="btn grow" id="pvS">Built-in preview</button></div>
+    ${CLONES.length ? `<div class="row" style="margin-top:8px">${CLONES.slice(0, 3).map(c => `<button class="btn grow" data-pvc="${c.id}">🗣️ ${esc(c.name)}</button>`).join('')}</div>` : ''}
     <div class="row" style="margin-top:12px">${DEFAULT_MOODS.some(d => d.id === id) ? '' : '<button class="btn ghost" id="mdDel" style="color:var(--bad)">Delete</button>'}<button class="btn ghost grow" id="mdDup">Duplicate</button><button class="btn pri grow" id="mdSave">Save</button></div>`, sh => {
     const read = () => {
       draft.icon = $('#mdIcon', sh).value.trim() || '🎭'; draft.name = $('#mdName', sh).value.trim() || 'Mood';
-      draft.voice = $('#mdVoice', sh).value; draft.style = $('#mdStyle', sh).value.trim(); draft.sysVoice = $('#mdSys', sh).value;
+      draft.voice = $('#mdVoice', sh).value; draft.style = $('#mdStyle', sh).value.trim(); draft.sysVoice = $('#mdSys', sh).value; draft.fishTag = $('#mdFish', sh).value.trim();
       const smp = $('#mdSample', sh).value.trim(); draft.sample = smp && smp !== SAMPLE ? smp : undefined;
     };
     $$('input[type=range]', sh).forEach(r => r.oninput = () => { draft[r.dataset.k] = +r.value; r.nextElementSibling.textContent = (+r.value).toFixed(2); });
     $$('[data-add]', sh).forEach(b => b.onclick = () => { const ta = $('#mdStyle', sh); ta.value = (ta.value.trim().replace(/[.,]$/, '') + (ta.value.trim() ? ', ' : 'in a ') + b.dataset.add).trim(); });
     $('#pvG', sh).onclick = e => { read(); Preview.run(draft, 'gemini', e.currentTarget); };
     $('#pvS', sh).onclick = e => { read(); Preview.run(draft, 'system', e.currentTarget); };
+    $$('[data-pvc]', sh).forEach(b => b.onclick = e => { read(); Preview.run({ ...draft, clone: b.dataset.pvc }, 'fish', e.currentTarget); });
     $('#mdSave', sh).onclick = () => {
       read(); Object.assign(m, draft); saveMoods(); closeSheet(); renderMoods();
-      if (P.meta && P.meta.moodId === m.id) { P.cache.clear(); renderPlayerMeta(); }
+      if (P.meta && P.meta.moodId === m.id) { P.clearCache(); renderPlayerMeta(); }
     };
     $('#mdDup', sh).onclick = () => { read(); const c = { ...draft, id: 'm' + uid(), name: draft.name + ' copy' }; MOODS.push(c); saveMoods(); closeSheet(); renderMoods(); editMood(c.id, true); };
     $('#mdDel', sh)?.addEventListener('click', () => { MOODS = MOODS.filter(x => x.id !== id); saveMoods(); closeSheet(); renderMoods(); });
@@ -1598,8 +1804,8 @@ function renderSettings() {
   $('#setBody').innerHTML = `
     <h2>Voice engine</h2>
     <div class="card">
-      <div class="seg" id="sEng">${[['auto', 'Gemini + backup'], ['gemini', 'Gemini only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <p class="small muted" style="margin-bottom:0">Gemini + backup uses the natural Gemini voices online and drops to your phone's built-in voice if you're offline or Gemini fails.</p>
+      <div class="seg" id="sEng">${[['auto', 'AI voice + backup'], ['gemini', 'AI voice only'], ['system', 'Built-in only']].map(([v, l]) => `<button data-e="${v}" class="${S.engine === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <p class="small muted" style="margin-bottom:0">AI voice + backup uses your own cloned voice (when a book has one) or Gemini online, and drops to your phone's built-in voice if you're offline or they fail.</p>
     </div>
     <h2>Gemini</h2>
     <div class="card">
@@ -1612,6 +1818,15 @@ function renderSettings() {
       <label class="f">Book analysis model</label>
       <input id="sText" value="${esc(S.textModel)}">
       <button class="btn block" id="sTest" style="margin-top:14px">Test Gemini voice</button>
+    </div>
+    <h2>Your own voices (Fish Audio)</h2>
+    <div class="card">
+      <label class="f" style="margin-top:0">Fish Audio API key</label>
+      <div class="row"><input id="sFish" type="password" value="${esc(S.fishKey)}" placeholder="Paste your Fish Audio API key" autocomplete="off"><button class="iconbtn" id="sFishShow" title="Show">👁</button></div>
+      <p class="small muted">Free account and key at <a href="https://fish.audio/app/api-keys/" target="_blank">fish.audio/app/api-keys</a>. Add voices in the Voices tab, then pick one as a book's narrator.</p>
+      <label class="f">Voice model</label>
+      <select id="sFishModel">${[['s2.1-pro-free', 'S2.1 Pro Free (free until 30 Nov 2026)'], ['s2.1-pro', 'S2.1 Pro (paid, about $15 per 180k words)'], ['s3-pro', 'S3 Pro (paid)']].map(([v, l]) => `<option value="${v}" ${v === S.fishModel ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <p class="small muted" style="margin-bottom:0">Fish Audio's free model is offered until 30 November 2026. After that, or if it won't use your cloned voice, switch to S2.1 Pro and add credit at fish.audio (about £6 for an average novel).</p>
     </div>
     <h2>Built-in voice</h2>
     <div class="card">
@@ -1630,10 +1845,13 @@ function renderSettings() {
   $$('#sEng [data-e]').forEach(b => b.onclick = () => { S.engine = b.dataset.e; saveSettings(); renderSettings(); });
   $('#sKey').onchange = e => { S.apiKey = e.target.value.trim(); saveSettings(); P.gemOffUntil = 0; };
   $('#sKeyShow').onclick = () => { const k = $('#sKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
-  $('#sModel').onchange = e => { if (e.target.value === '__custom') { $('#sModelCustom').classList.remove('hidden'); $('#sModelCustom').focus(); } else { S.ttsModel = e.target.value; saveSettings(); $('#sModelCustom').classList.add('hidden'); P.cache.clear(); P.gemOffUntil = 0; } };
-  $('#sModelCustom').onchange = e => { if (e.target.value.trim()) { S.ttsModel = e.target.value.trim(); saveSettings(); P.cache.clear(); P.gemOffUntil = 0; } };
+  $('#sModel').onchange = e => { if (e.target.value === '__custom') { $('#sModelCustom').classList.remove('hidden'); $('#sModelCustom').focus(); } else { S.ttsModel = e.target.value; saveSettings(); $('#sModelCustom').classList.add('hidden'); P.clearCache(); P.gemOffUntil = 0; } };
+  $('#sModelCustom').onchange = e => { if (e.target.value.trim()) { S.ttsModel = e.target.value.trim(); saveSettings(); P.clearCache(); P.gemOffUntil = 0; } };
   $('#sText').onchange = e => { S.textModel = e.target.value.trim() || DEFAULT_SETTINGS.textModel; saveSettings(); };
   $('#sTest').onclick = e => { S.apiKey = $('#sKey').value.trim(); saveSettings(); Preview.run({ ...moodById('story'), sample: 'Hello, I\'m your BookTalk narrator. Shall we begin?' }, 'gemini', e.currentTarget); };
+  $('#sFish').onchange = e => { S.fishKey = e.target.value.trim(); saveSettings(); P.fishOffUntil = 0; };
+  $('#sFishShow').onclick = () => { const k = $('#sFish'); k.type = k.type === 'password' ? 'text' : 'password'; };
+  $('#sFishModel').onchange = e => { S.fishModel = e.target.value; saveSettings(); P.fishOffUntil = 0; P.clearCache(); };
   $('#sSys').onchange = e => { S.sysVoice = e.target.value; saveSettings(); };
   $('#sSysTest').onclick = e => Preview.run({ ...moodById('story'), sysVoice: '', sample: 'Hello, I\'m the built-in BookTalk voice. Shall we begin?' }, 'system', e.currentTarget);
   $('#sSysMore')?.addEventListener('click', () => NATIVE.openVoiceSettings());

@@ -140,13 +140,18 @@ public class Speaker {
     /* ---------------- Gemini PCM ---------------- */
 
     public void playPcm(String id, String b64, int rate, float speed, int pauseMs) {
+        playPcmBytes(id, null, b64, rate, speed, pauseMs);
+    }
+
+    /** Either raw bytes or base64 may be given. */
+    public void playPcmBytes(String id, byte[] raw, String b64, int rate, float speed, int pauseMs) {
         stopAll();
         final int myGen = gen;
         requestFocus();
         new Thread(() -> {
             AudioTrack t = null;
             try {
-                byte[] pcm = Base64.decode(b64, Base64.DEFAULT);
+                byte[] pcm = raw != null ? raw : Base64.decode(b64, Base64.DEFAULT);
                 if (myGen != gen) return;
                 int minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 t = new AudioTrack.Builder()

@@ -10,7 +10,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.util.Base64;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -36,6 +38,11 @@ import androidx.webkit.WebViewClientCompat;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 public class MainActivity extends ComponentActivity implements Speaker.Listener {
 
     private static final String START_URL = "https://appassets.androidplatform.net/assets/index.html";
@@ -45,6 +52,12 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
     private WebView webView;
     private Speaker speaker;
     private ValueCallback<Uri[]> fileCallback;
+    private PermissionRequest pendingMic;
+    private final ExecutorService net = Executors.newFixedThreadPool(4);
+    /** Fish audio kept natively (key -> PCM) so big clips never pass through JavaScript. */
+    private final Map<String, byte[]> store = new LinkedHashMap<String, byte[]>(16, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, byte[]> e) { return size() > 14; }
+    };
     private ActivityResultLauncher<Intent> filePicker;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -119,6 +132,22 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean wantsMic = false;
+                    for (String r : request.getResources()) if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsMic = true;
+                    if (!wantsMic) { request.deny(); return; }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    } else {
+                        if (pendingMic != null) pendingMic.deny();
+                        pendingMic = request;
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 2);
+                    }
+                });
+            }
+
+            @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
@@ -162,7 +191,43 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         });
     }
 
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == 2 && pendingMic != null) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                pendingMic.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            } else {
+                pendingMic.deny();
+            }
+            pendingMic = null;
+        }
+    }
+
     /* ---------------- Events to the web page ---------------- */
+
+    private void fishReply(String reqId, FishClient.Result r, Exception err, boolean keepAudio) {
+        try {
+            JSONObject o = new JSONObject().put("type", "fish").put("reqId", reqId);
+            if (err != null) {
+                o.put("ok", false).put("status", 0).put("msg", "Network error: " + err.getMessage());
+            } else if (!r.ok()) {
+                String msg = r.text();
+                try { JSONObject j = new JSONObject(msg); msg = j.optString("message", msg); } catch (Exception ignored) { }
+                o.put("ok", false).put("status", r.status).put("msg", msg.length() > 300 ? msg.substring(0, 300) : msg);
+            } else if (keepAudio) {
+                if (r.body == null || r.body.length < 200) {
+                    o.put("ok", false).put("status", 0).put("msg", "Fish Audio returned no audio");
+                } else {
+                    synchronized (store) { store.put(reqId, r.body); }
+                    o.put("ok", true).put("bytes", r.body.length);
+                }
+            } else {
+                o.put("ok", true).put("body", r.text());
+            }
+            emit(o);
+        } catch (JSONException ignored) { }
+    }
 
     private void emit(JSONObject o) {
         final String js = "window.BT && BT.native(" + JSONObject.quote(o.toString()) + ")";
@@ -206,6 +271,40 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         @JavascriptInterface
         public void silence(String id, int ms) { speaker.silence(id, ms); }
+
+        @JavascriptInterface
+        public void fishCreate(String reqId, String key, String title, String wavB64) {
+            net.execute(() -> {
+                try { fishReply(reqId, FishClient.createVoice(key, title, Base64.decode(wavB64, Base64.DEFAULT)), null, false); }
+                catch (Exception e) { fishReply(reqId, null, e, false); }
+            });
+        }
+
+        @JavascriptInterface
+        public void fishTts(String reqId, String key, String model, String json) {
+            net.execute(() -> {
+                try { fishReply(reqId, FishClient.tts(key, model, json), null, true); }
+                catch (Exception e) { fishReply(reqId, null, e, true); }
+            });
+        }
+
+        @JavascriptInterface
+        public void fishDelete(String key, String voiceId) {
+            net.execute(() -> { try { FishClient.deleteVoice(key, voiceId); } catch (Exception ignored) { } });
+        }
+
+        @JavascriptInterface
+        public void playStored(String id, String key, int sampleRate, double speed, int pauseMs) {
+            byte[] pcm;
+            synchronized (store) { pcm = store.get(key); }
+            if (pcm == null) { onError(id, "audio-missing"); return; }
+            speaker.playPcmBytes(id, pcm, null, sampleRate, (float) speed, pauseMs);
+        }
+
+        @JavascriptInterface
+        public void dropStored(String key) {
+            synchronized (store) { store.remove(key); }
+        }
 
         @JavascriptInterface
         public void stopAll() { speaker.stopAll(); }
@@ -260,6 +359,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         if (instance == this) instance = null;
         PlaybackService.update(getApplicationContext(), false, false, null, null);
         speaker.shutdown();
+        net.shutdownNow();
         if (webView != null) { webView.destroy(); webView = null; }
         super.onDestroy();
     }
