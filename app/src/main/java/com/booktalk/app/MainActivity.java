@@ -1,0 +1,266 @@
+package com.booktalk.app;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.speech.tts.TextToSpeech;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+
+import androidx.activity.ComponentActivity;
+import androidx.activity.EdgeToEdge;
+import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+import androidx.webkit.WebViewAssetLoader;
+import androidx.webkit.WebViewClientCompat;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+public class MainActivity extends ComponentActivity implements Speaker.Listener {
+
+    private static final String START_URL = "https://appassets.androidplatform.net/assets/index.html";
+
+    static volatile MainActivity instance;
+
+    private WebView webView;
+    private Speaker speaker;
+    private ValueCallback<Uri[]> fileCallback;
+    private ActivityResultLauncher<Intent> filePicker;
+
+    @SuppressLint("SetJavaScriptEnabled")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        EdgeToEdge.enable(this);
+        super.onCreate(savedInstanceState);
+        instance = this;
+
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        webView = new WebView(this);
+        webView.setBackgroundColor(Color.BLACK);
+        root.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+            v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
+            return WindowInsetsCompat.CONSUMED;
+        });
+        WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        c.setAppearanceLightStatusBars(false);
+        c.setAppearanceLightNavigationBars(false);
+
+        speaker = new Speaker(this, this);
+        setupLaunchers();
+        setupWebView();
+        setupBack();
+
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+
+        webView.loadUrl(START_URL);
+    }
+
+    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
+    private void setupWebView() {
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+        s.setTextZoom(100);
+        // Keep the page's renderer alive while we read in the background
+        webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+
+        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView.setWebViewClient(new WebViewClientCompat() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return loader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if ("appassets.androidplatform.net".equals(uri.getHost())) return false;
+                tryStart(new Intent(Intent.ACTION_VIEW, uri));
+                return true;
+            }
+        });
+
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (fileCallback != null) fileCallback.onReceiveValue(null);
+                fileCallback = callback;
+                try {
+                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("*/*");
+                    filePicker.launch(i);
+                } catch (Exception e) {
+                    fileCallback = null;
+                    return false;
+                }
+                return true;
+            }
+        });
+
+        webView.addJavascriptInterface(new Bridge(), "BookTalkNative");
+    }
+
+    private void setupLaunchers() {
+        filePicker = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            if (fileCallback == null) return;
+            Uri[] uris = null;
+            Intent data = result.getData();
+            if (result.getResultCode() == RESULT_OK && data != null && data.getData() != null) {
+                uris = new Uri[]{data.getData()};
+            }
+            fileCallback.onReceiveValue(uris);
+            fileCallback = null;
+        });
+    }
+
+    private void setupBack() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                webView.evaluateJavascript("window.BT ? BT.back() : 'exit'", value -> {
+                    if (value == null || value.contains("exit")) moveTaskToBack(true);
+                });
+            }
+        });
+    }
+
+    /* ---------------- Events to the web page ---------------- */
+
+    private void emit(JSONObject o) {
+        final String js = "window.BT && BT.native(" + JSONObject.quote(o.toString()) + ")";
+        runOnUiThread(() -> { if (webView != null) webView.evaluateJavascript(js, null); });
+    }
+
+    private void emit(String type, String id, String msg) {
+        try {
+            JSONObject o = new JSONObject().put("type", type);
+            if (id != null) o.put("id", id);
+            if (msg != null) o.put("msg", msg);
+            emit(o);
+        } catch (JSONException ignored) { }
+    }
+
+    /** From the notification / headset. Returns false if the app UI is gone. */
+    static boolean sendMedia(String action) {
+        MainActivity a = instance;
+        if (a == null || a.webView == null) return false;
+        try { a.emit(new JSONObject().put("type", "media").put("action", action)); } catch (JSONException ignored) { }
+        return true;
+    }
+
+    @Override public void onDone(String id) { emit("done", id, null); }
+    @Override public void onError(String id, String msg) { emit("error", id, msg); }
+    @Override public void onVoicesReady() { emit("voices", null, null); }
+    @Override public void onFocusLost() { sendMedia("pause"); }
+
+    /* ---------------- Bridge called from JavaScript ---------------- */
+
+    private class Bridge {
+        @JavascriptInterface
+        public void ttsSpeak(String id, String text, double pitch, double rate, String voice, int pauseMs) {
+            speaker.speak(id, text, (float) pitch, (float) rate, voice, pauseMs);
+        }
+
+        @JavascriptInterface
+        public void pcmPlay(String id, String b64, int sampleRate, double speed, int pauseMs) {
+            speaker.playPcm(id, b64, sampleRate, (float) speed, pauseMs);
+        }
+
+        @JavascriptInterface
+        public void silence(String id, int ms) { speaker.silence(id, ms); }
+
+        @JavascriptInterface
+        public void stopAll() { speaker.stopAll(); }
+
+        @JavascriptInterface
+        public String ttsVoices() { return speaker.voicesJson(); }
+
+        @JavascriptInterface
+        public void setSession(boolean active, boolean playing, String title, String sub) {
+            if (!playing) speaker.abandonFocus();
+            PlaybackService.update(getApplicationContext(), active, playing, title, sub);
+        }
+
+        @JavascriptInterface
+        public void openVoiceSettings() {
+            runOnUiThread(() -> {
+                Intent install = new Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
+                install.setPackage("com.google.android.tts");
+                if (tryStart(install)) return;
+                if (tryStart(new Intent("com.android.settings.TTS_SETTINGS"))) return;
+                if (tryStart(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))) {
+                    Toast.makeText(MainActivity.this, "Open Text-to-speech output, then the gear next to Speech Services by Google", Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String appVersion() {
+            try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+            catch (Exception e) { return ""; }
+        }
+    }
+
+    private boolean tryStart(Intent i) {
+        try {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            return true;
+        } catch (ActivityNotFoundException | SecurityException e) {
+            return false;
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        emit("voices", null, null); // voice packs may have been installed meanwhile
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (instance == this) instance = null;
+        PlaybackService.update(getApplicationContext(), false, false, null, null);
+        speaker.shutdown();
+        if (webView != null) { webView.destroy(); webView = null; }
+        super.onDestroy();
+    }
+}

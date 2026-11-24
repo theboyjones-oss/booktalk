@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# signing password: paste into the KEYSTORE_PASSWORD GitHub secret, never commit
+KEYSTORE_PASSWORD.txt
