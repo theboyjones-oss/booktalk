@@ -255,6 +255,12 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
     @Override public void onError(String id, String msg) { emit("error", id, msg); }
     @Override public void onVoicesReady() { emit("voices", null, null); }
     @Override public void onFocusLost() { sendMedia("pause"); }
+    @Override public void onStart(String id, long durationMs) {
+        try { emit(new JSONObject().put("type", "start").put("id", id).put("dur", durationMs)); } catch (JSONException ignored) { }
+    }
+    @Override public void onRange(String id, int start) {
+        try { emit(new JSONObject().put("type", "range").put("id", id).put("start", start)); } catch (JSONException ignored) { }
+    }
 
     /* ---------------- Bridge called from JavaScript ---------------- */
 

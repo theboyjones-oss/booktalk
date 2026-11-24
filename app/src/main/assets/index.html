@@ -97,7 +97,11 @@ nav.tabs button.on{color:var(--ac)}
 #reader p{margin:0 0 .85em;transition:color .25s;border-radius:6px}
 #reader p.h{font-weight:700;color:#bdb9b2;font-size:1.15em;margin:1.2em 0 .8em}
 #reader p.sc{text-align:center;letter-spacing:.6em;color:var(--tx3)}
-#reader p.cur{color:var(--tx)}
+#reader{position:relative}
+#reader p.cur{color:#c4c0b9}
+#reader .w.rd{color:var(--tx)}
+#reader .w.cw{color:var(--ac2)}
+#reader p.done .w{color:inherit}
 #reader p.done{color:#57544f}
 #pctl{padding:10px 16px 18px;background:linear-gradient(transparent,var(--bg) 22%);border-top:1px solid var(--line)}
 .seek{width:100%;accent-color:var(--ac);padding:0;border:0;background:none;height:24px}
@@ -1039,6 +1043,8 @@ const Out = {
     const u = new SpeechSynthesisUtterance(text);
     u.pitch = pitch; u.rate = rate; u.lang = 'en-GB';
     const v = speechSynthesis.getVoices().find(v => v.name === voice); if (v) u.voice = v;
+    u.onstart = () => onNative({ type: 'start', id, dur: -1 });
+    u.onboundary = e => onNative({ type: 'range', id, start: e.charIndex });
     u.onend = () => setTimeout(() => onNative({ type: 'done', id }), pauseMs);
     u.onerror = e => { if (e.error !== 'interrupted' && e.error !== 'canceled') onNative({ type: 'error', id, msg: e.error }); };
     speechSynthesis.cancel(); speechSynthesis.speak(u);
@@ -1057,7 +1063,7 @@ const Out = {
     const ab = ctx.createBuffer(1, n, rate); ab.copyToChannel(f, 0);
     const src = ctx.createBufferSource(); src.buffer = ab; src.playbackRate.value = speed; src.connect(ctx.destination);
     src.onended = () => { if (this.webSrc === src) { this.webSrc = null; setTimeout(() => onNative({ type: 'done', id }), pauseMs); } };
-    this.webSrc = src; src.start();
+    this.webSrc = src; src.start(); onNative({ type: 'start', id, dur: n / rate / speed * 1000 });
   },
   play(id, a, speed, pauseMs = 0) {
     if (a.store) { NATIVE.playStored(id, a.store, a.rate, speed, pauseMs); return; }
@@ -1221,6 +1227,7 @@ const P = {
         const a = await this.audioFor(this.ch, this.u, eng);
         if (tok !== this.token || !this.playing) return;
         this.curId = 'u' + tok;
+        Sync.prepare(unit, this.curId, 1);
         Out.play(this.curId, a, clamp(m.pace * speed, 0.5, 2.5), pauseMs);
         setEngineChip(eng);
         if (this.lastEngine && this.lastEngine !== eng && eng === 'gemini' && this.narrator()) toast('Your voice is unavailable, using the Gemini voice');
@@ -1235,7 +1242,8 @@ const P = {
     }
     if (S.engine === 'gemini' && (S.apiKey || this.narrator())) { this.pause(); toast('AI voice unavailable. Switch to "AI voice + backup" to keep listening offline.', 4500); return; }
     this.curId = 'u' + tok;
-    Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, pauseMs || 220);
+    Sync.prepare(unit, this.curId, clamp(m.pace * speed, 0.3, 3));
+    Out.say(this.curId, unit.text, clamp(m.pitch, 0.5, 2), clamp(m.pace * speed, 0.3, 3), m.sysVoice || S.sysVoice, pauseMs || 120);
     setEngineChip('system');
     if (this.lastEngine && this.lastEngine !== 'system') toast('Switched to the built-in voice');
     this.lastEngine = 'system';
@@ -1300,8 +1308,8 @@ const P = {
     let first = null;
     for (let i = unit.p0; i <= unit.p1; i++) { const el = rd.querySelector(`p[data-i="${i}"]`); if (el) { el.classList.add('cur'); el.classList.remove('done'); first = first || el; } }
     if (first && (S.autoScroll || force)) {
-      const top = first.offsetTop - rd.clientHeight * 0.28;
-      rd.scrollTo({ top, behavior: force ? 'auto' : 'smooth' });
+      const top = first.offsetTop - rd.clientHeight * 0.35;
+      if (force || Date.now() > Sync.userUntil) rd.scrollTo({ top, behavior: force ? 'auto' : 'smooth' });
     }
     renderProgress();
   },
@@ -1332,6 +1340,8 @@ function onNative(ev) {
     case 'done': if (ev.id === Preview.id) Preview.done(); else P.onDone(ev.id); break;
     case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else P.onError(ev.id, ev.msg); break;
     case 'fish': Fish.onEvent(ev); break;
+    case 'start': Sync.start(ev.id, ev.dur); break;
+    case 'range': Sync.range(ev.id, ev.start); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
     case 'media':
       if (ev.action === 'toggle') P.toggle();
@@ -1551,6 +1561,63 @@ async function openBook(id) {
 }
 
 /* ---------------- UI: player ---------------- */
+/* ---------------- Follow-along: word highlighting + scrolling in time with the voice ---------------- */
+const Sync = {
+  id: null, words: [], idx: -1, t0: 0, dur: 0, len: 1, rate: 1, rng: -1, started: false, userUntil: 0,
+  prepare(unit, id, rate) {
+    this.words.forEach(w => { w.classList.remove('cw'); w.classList.add('rd'); });
+    this.id = id; this.words = []; this.idx = -1; this.rng = -1; this.dur = 0; this.started = false; this.rate = rate || 1;
+    this.len = Math.max(1, unit.text.length);
+    const rd = $('#reader'), paras = P.content.chapters[P.ch].paras;
+    let cum = 0;
+    for (let i = unit.p0; i <= unit.p1; i++) {
+      const el = rd.querySelector(`p[data-i="${i}"]`), raw = paras[i];
+      if (!el || raw === SCENE) continue;
+      const T = raw[0] === HEAD ? raw.slice(1) : raw;
+      // offset of this paragraph's text inside the spoken unit text
+      let shift = cum;
+      if (unit.p0 === unit.p1 && !unit.head && unit.text.length < T.length) { const b = T.indexOf(unit.text.slice(0, 40)); shift = -(b < 0 ? 0 : b); }
+      let html = '', m; const re = /(\s+)|(\S+)/g, mine = [];
+      while ((m = re.exec(T))) {
+        if (m[1]) { html += m[1].includes('\n') ? '<br>' : ' '; continue; }
+        const o = m.index + shift;
+        html += `<span class="w${o < 0 ? ' rd' : ''}" data-o="${o}">${esc(m[2])}</span>`;
+      }
+      el.innerHTML = html;
+      el.querySelectorAll('span.w').forEach(w => { const o = +w.dataset.o; if (o >= 0 && o < this.len + 1) mine.push(w); });
+      this.words.push(...mine);
+      cum += T.length + 1;
+    }
+  },
+  start(id, dur) {
+    if (id !== this.id || this.started) return;
+    this.started = true; this.t0 = performance.now();
+    this.dur = dur > 0 ? dur : this.len / (14.5 * this.rate) * 1000; // estimate for the built-in voice
+  },
+  range(id, start) { if (id === this.id) { this.rng = start; if (!this.started) this.start(id, -1); } },
+  offset() {
+    if (this.rng >= 0) return this.rng;
+    if (!this.started) return -1;
+    return clamp((performance.now() - this.t0) / this.dur, 0, 1) * this.len;
+  },
+  tick() {
+    requestAnimationFrame(() => Sync.tick());
+    if (!P.playing || !this.words.length || !$('#player').classList.contains('on')) return;
+    const off = this.offset(); if (off < 0) return;
+    let i = this.idx;
+    while (i + 1 < this.words.length && +this.words[i + 1].dataset.o <= off) i++;
+    if (i === this.idx || i < 0) return;
+    for (let k = Math.max(0, this.idx); k < i; k++) { this.words[k].classList.remove('cw'); this.words[k].classList.add('rd'); }
+    const w = this.words[i]; w.classList.add('cw'); this.idx = i;
+    if (S.autoScroll && Date.now() > this.userUntil) {
+      const rd = $('#reader'), want = w.offsetTop - rd.clientHeight * 0.35;
+      if (Math.abs(rd.scrollTop - want) > S.readSize * 1.3) rd.scrollTo({ top: want, behavior: 'smooth' });
+    }
+  },
+};
+requestAnimationFrame(() => Sync.tick());
+['touchstart', 'wheel'].forEach(ev => $('#reader').addEventListener(ev, () => { Sync.userUntil = Date.now() + 6000; }, { passive: true }));
+
 function renderReader() {
   const paras = P.content.chapters[P.ch].paras;
   $('#reader').innerHTML = paras.map((p, i) => p === SCENE ? `<p class="sc" data-i="${i}">* * *</p>` : p[0] === HEAD ? `<p class="h" data-i="${i}">${esc(p.slice(1))}</p>` : `<p data-i="${i}">${esc(p).replace(/\n/g, '<br>')}</p>`).join('');

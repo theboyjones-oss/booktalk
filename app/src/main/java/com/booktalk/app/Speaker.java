@@ -34,6 +34,8 @@ public class Speaker {
         void onError(String id, String msg);
         void onVoicesReady();
         void onFocusLost();
+        void onStart(String id, long durationMs);
+        void onRange(String id, int start);
     }
 
     private static final String TAIL = "#t";
@@ -68,7 +70,14 @@ public class Speaker {
             try { tts.setLanguage(Locale.UK); } catch (Exception ignored) { }
             tts.setAudioAttributes(attrs);
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) { }
+                @Override public void onStart(String id) {
+                    if (id != null && id.endsWith(TAIL)) listener.onStart(id.substring(0, id.length() - TAIL.length()), -1);
+                    else if (id != null && !id.startsWith("sil")) listener.onStart(id, -1);
+                }
+                @Override public void onRangeStart(String id, int start, int end, int frame) {
+                    if (id == null) return;
+                    listener.onRange(id.endsWith(TAIL) ? id.substring(0, id.length() - TAIL.length()) : id, start);
+                }
                 @Override public void onDone(String id) {
                     if (id == null || id.endsWith(TAIL)) return;
                     listener.onDone(id);
@@ -168,32 +177,36 @@ public class Speaker {
                     t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(1f));
                 } catch (Exception ignored) { }
                 current = t;
+                int bufBytes = Math.max(minBuf * 4, 64 * 1024);
+                long frames = pcm.length / 2;
+                long pauseFrames = (long) rate * pauseMs / 1000;
+                long total = frames + pauseFrames;
                 t.play();
+                listener.onStart(id, (long) (frames * 1000.0 / rate / Math.max(speed, 0.25f)));
                 int off = 0;
                 while (off < pcm.length && myGen == gen) {
-                    int n = t.write(pcm, off, Math.min(16384, pcm.length - off));
+                    int n = t.write(pcm, off, Math.min(8192, pcm.length - off));
                     if (n < 0) throw new IllegalStateException("AudioTrack write " + n);
                     off += n;
                 }
-                long frames = pcm.length / 2;
-                if (pauseMs > 0 && myGen == gen) {
-                    byte[] sil = new byte[(int) ((long) rate * pauseMs / 1000) * 2];
-                    int so = 0;
-                    while (so < sil.length && myGen == gen) {
-                        int n = t.write(sil, so, sil.length - so);
-                        if (n < 0) break;
-                        so += n;
-                    }
-                    frames += sil.length / 2;
-                }
-                if (myGen != gen) return;
-                t.stop(); // plays out whatever is buffered, then stops
-                long deadline = System.currentTimeMillis() + (long) (frames * 1000.0 / rate / Math.max(speed, 0.25f)) + 3000;
+                // Trailing silence: the requested pause plus a full buffer of padding so the real
+                // audio is pushed all the way through (no stop() call, so the position keeps counting).
+                byte[] zeros = new byte[8192];
+                long padBytes = pauseFrames * 2 + bufBytes;
+                long written = 0;
+                long deadline = System.currentTimeMillis() + (long) (total * 1000.0 / rate / Math.max(speed, 0.25f)) + 2500;
                 while (myGen == gen) {
                     long head = t.getPlaybackHeadPosition() & 0xffffffffL;
-                    if (head >= frames || t.getPlayState() == AudioTrack.PLAYSTATE_STOPPED && head > 0 && head >= frames - rate / 50) break;
+                    if (head >= total) break;
                     if (System.currentTimeMillis() > deadline) break;
-                    Thread.sleep(25);
+                    if (written < padBytes) {
+                        int n = t.write(zeros, 0, (int) Math.min(zeros.length, padBytes - written), AudioTrack.WRITE_NON_BLOCKING);
+                        if (n < 0) break;
+                        written += n;
+                        if (n == 0) Thread.sleep(10);
+                    } else {
+                        Thread.sleep(10);
+                    }
                 }
                 if (myGen == gen) listener.onDone(id);
             } catch (Throwable e) {
