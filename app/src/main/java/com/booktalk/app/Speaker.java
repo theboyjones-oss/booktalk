@@ -257,7 +257,13 @@ public class Speaker {
      */
     public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, int pauseMs) { playStream(id, q, rate, speed, 1f, pauseMs); }
 
-    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, float pitch, int pauseMs) {
+    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, float pitch, int pauseMs) { playStream(id, q, rate, speed, pitch, pauseMs, 0); }
+
+    /**
+     * preRollMs: how much speech to collect before starting, so a phone that generates more slowly
+     * than real time pauses once at the start instead of between sentences.
+     */
+    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, float pitch, int pauseMs, long preRollMs) {
         stopAll();
         final int myGen = gen;
         requestFocus();
@@ -277,11 +283,25 @@ public class Speaker {
                 current = t;
                 t.play();
                 long frames = 0;
-                boolean started = false;
-                while (myGen == gen) {
+                boolean started = false, ended = false;
+                // Pre-roll: hold back until enough speech is ready (or the passage is complete)
+                java.util.ArrayList<Chunk> held = new java.util.ArrayList<>();
+                long heldFrames = 0, needFrames = preRollMs * rate / 1000;
+                while (myGen == gen && heldFrames < needFrames) {
                     Chunk c = q.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (c == null) continue;
-                    if (c.end) break;
+                    if (c.end) { ended = true; break; }
+                    held.add(c); heldFrames += c.pcm.length;
+                }
+                while (myGen == gen) {
+                    Chunk c;
+                    if (!held.isEmpty()) c = held.remove(0);
+                    else if (ended) break;
+                    else {
+                        c = q.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                        if (c == null) continue;
+                        if (c.end) break;
+                    }
                     if (!started) { listener.onStart(id, -1); started = true; }
                     listener.onRange(id, c.offset);
                     int off = 0;

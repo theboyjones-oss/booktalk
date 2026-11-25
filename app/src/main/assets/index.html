@@ -321,6 +321,7 @@ const DEFAULT_SETTINGS = {
 };
 let S = Object.assign({}, DEFAULT_SETTINGS, LS.get('settings', {}));
 const saveSettings = () => LS.set('settings', S);
+if (!S.deepPrefetch) { S.deepPrefetch = true; S.prefetch = Math.max(S.prefetch || 0, 8); saveSettings(); }   // prepare further ahead to avoid pauses
 
 const GEMINI_VOICES = [
   ['Sulafat','Warm'],['Charon','Informative'],['Puck','Upbeat'],['Kore','Firm'],['Gacrux','Mature'],['Enceladus','Breathy'],
@@ -1124,6 +1125,7 @@ const P = {
     this.ch = ch; this.units = this.unitsFor(ch);
     let u = this.units.findIndex(x => x.p1 >= para); this.u = u < 0 ? 0 : u;
     renderReader(); this.highlight(true);
+    if (NATIVE && Pocket.ready && Narr.has(this.narrator().id)) this.ahead(S.prefetch);   // start preparing as soon as a book is open
   },
   async play() {
     if (!this.meta) return;
@@ -1142,6 +1144,7 @@ const P = {
     if (!this.playing) return;
     this.playing = false; this.token++; this.curId = null; Out.stop();
     renderPlayState(); setStatus('');
+    this.ahead(S.prefetch + 6);   // use the pause to build up a reserve
     if (this.meta) Out.session(true, false, this.meta.title, this.chapterTitle());
   },
   toggle() { this.playing ? this.pause() : this.play(); },
@@ -1262,6 +1265,7 @@ function onNative(ev) {
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'start': Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
+    case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
     case 'media':
       if (ev.action === 'toggle') P.toggle();
       else if (ev.action === 'play') P.play();
@@ -1765,7 +1769,8 @@ function renderSettings() {
       <div class="set"><div class="grow">Skip front &amp; back matter<div class="small muted">Covers, contents, copyright, index and similar pages are switched off when a book is added</div></div><button class="tog ${S.skipMatter ? 'on' : ''}" data-b="skipMatter"></button></div>
       <div class="set"><div class="grow">Follow along<div class="small muted">Scroll the text to keep up with the voice</div></div><button class="tog ${S.autoScroll ? 'on' : ''}" data-b="autoScroll"></button></div>
       <div class="set"><div class="grow">Text size</div><div class="slider" style="width:52%"><input type="range" id="sSize" min="14" max="28" step="1" value="${S.readSize}"><output>${S.readSize}</output></div></div>
-      <div class="set"><div class="grow">Prepare ahead<div class="small muted">Passages made in advance while you listen</div></div><div class="slider" style="width:42%"><input type="range" id="sPre" min="1" max="8" step="1" value="${S.prefetch}"><output>${S.prefetch}</output></div></div>
+      <div class="set"><div class="grow">Prepare ahead<div class="small muted">Passages made in advance while you listen or pause</div></div><div class="slider" style="width:42%"><input type="range" id="sPre" min="3" max="20" step="1" value="${S.prefetch}"><output>${S.prefetch}</output></div></div>
+      ${NATIVE?.voiceSpeed ? (() => { const r = NATIVE.voiceSpeed(), x = r > 0 ? 1 / r : 0; return `<div class="set"><div class="grow">Phone speed<div class="small muted">${x >= 1.15 ? `Makes speech ${x.toFixed(1)}× faster than it's read, so listening should be smooth.` : x >= 0.95 ? `Makes speech about as fast as it's read. BookTalk prepares ahead so it keeps up; if you hear pauses, tap the status chip in the player and prepare the chapter first.` : `Makes speech slower than it's read (${x.toFixed(1)}×). BookTalk pauses briefly before passages to avoid stopping mid-sentence. For gap-free listening, prepare the chapter first (status chip in the player), ideally while charging.`}</div></div></div>`; })() : ''}
       <div class="set"><div class="grow">Saved audio<div class="small muted" id="sCache">Passages already made are kept so replaying them is instant</div></div><button class="btn" id="sCacheClear">Clear</button></div>
     </div>
     <p class="small muted" style="text-align:center;margin-top:28px">BookTalk ${NATIVE?.appVersion ? esc(NATIVE.appVersion()) : ''} · your books and voices stay on this phone</p>`;

@@ -84,6 +84,9 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         speaker = new Speaker(this, this);
         cache = new AudioCache(this);
         kokoro = new KokoroEngine(this, cache, speaker, new KokoroEngine.Events() {
+            @Override public void tuning(boolean on) {
+                try { emit(new JSONObject().put("type", "tuning").put("on", on)); } catch (JSONException ignored) { }
+            }
             @Override public void install(String pack, String stage, int pct, String msg) {
                 try { emit(new JSONObject().put("type", "kokinst").put("pack", pack).put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
             }
@@ -432,6 +435,9 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         @JavascriptInterface
         public int kokoroPending() { return kokoro.pending(); }
+
+        @JavascriptInterface
+        public double voiceSpeed() { return kokoro.rtf(); }
 
         @JavascriptInterface
         public double cacheMB() { return cache.size() / 1048576.0; }

@@ -39,6 +39,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class KokoroEngine {
 
     public interface Events {
+        void tuning(boolean on);
         void install(String pack, String stage, int pct, String msg);
         void prepared(String reqId, boolean ok, String msg);
         void busy(int pending);
@@ -58,6 +59,10 @@ public class KokoroEngine {
     private String loadedLexicon = "";      // "pocket" when the voice-cloning model is loaded
     private final java.util.Set<String> installing = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Map<String, float[]> refs = new java.util.HashMap<>();
+    private final android.content.SharedPreferences prefs;
+    /** Seconds of work per second of speech (smoothed). Below 1 = faster than real time. */
+    private volatile float rtf;
+    public float rtf() { return rtf; }
 
     private static class Job {
         String key, text, reqId, voice; int sid;   // voice != null -> cloned voice (Pocket TTS)
@@ -78,12 +83,14 @@ public class KokoroEngine {
         this.dir = new File(this.ctx.getFilesDir(), "kokoro");
         this.pocketDir = new File(this.ctx.getFilesDir(), "pocket");
         this.voiceDir = new File(this.ctx.getFilesDir(), "voices");
+        this.prefs = this.ctx.getSharedPreferences("tts", Context.MODE_PRIVATE);
+        this.rtf = prefs.getFloat("pocketRtf", 0.9f);
         voiceDir.mkdirs();
         this.cache = cache;
         this.speaker = speaker;
         this.events = events;
         Thread w = new Thread(this::workLoop, "kokoro");
-        w.setPriority(Thread.NORM_PRIORITY - 1);
+        w.setPriority(Thread.NORM_PRIORITY);
         w.setDaemon(true);
         w.start();
     }
@@ -269,9 +276,11 @@ public class KokoroEngine {
         }
     }
 
-    private OfflineTts pocketModel() {
+    private OfflineTts pocketModel() { return pocketModel(prefs.getInt("pocketThreads", 4)); }
+
+    private OfflineTts pocketModel(int threads) {
         synchronized (lock) {
-            if (tts != null && "pocket".equals(loadedLexicon)) return tts;
+            if (tts != null && ("pocket" + threads).equals(loadedLexicon)) return tts;
             if (tts != null) { try { tts.release(); } catch (Throwable ignored) { } tts = null; }
             OfflineTtsPocketModelConfig p = new OfflineTtsPocketModelConfig();
             p.setLmFlow(new File(pocketDir, "lm_flow.int8.onnx").getPath());
@@ -283,14 +292,55 @@ public class KokoroEngine {
             p.setTokenScoresJson(new File(pocketDir, "token_scores.json").getPath());
             OfflineTtsModelConfig mc = new OfflineTtsModelConfig();
             mc.setPocket(p);
-            mc.setNumThreads(Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors())));
+            mc.setNumThreads(Math.max(1, Math.min(threads, Runtime.getRuntime().availableProcessors())));
             mc.setProvider("cpu");
             OfflineTtsConfig cfg = new OfflineTtsConfig();
             cfg.setModel(mc);
             tts = new OfflineTts(null, cfg);
-            loadedLexicon = "pocket";
+            loadedLexicon = "pocket" + threads;
             return tts;
         }
+    }
+
+    /** One-time: find the number of processor threads that makes speech fastest on this phone. */
+    private void tuneIfNeeded(String voice) {
+        if (prefs.getInt("pocketThreads", 0) > 0) return;
+        events.tuning(true);
+        try {
+            int cores = Runtime.getRuntime().availableProcessors();
+            int[] options = cores >= 8 ? new int[]{2, 4, 6} : cores >= 4 ? new int[]{2, 4} : new int[]{Math.max(1, cores)};
+            int best = options[0]; float bestRtf = Float.MAX_VALUE;
+            int[] r = new int[1];
+            float[] ref = reference(voice, r);
+            String text = "This is a short test, so BookTalk can learn how quickly this phone can speak.";
+            for (int th : options) {
+                OfflineTts t = pocketModel(th);
+                GenerationConfig gc = new GenerationConfig();
+                gc.setReferenceAudio(ref); gc.setReferenceSampleRate(r[0]); gc.setNumSteps(5);
+                java.util.HashMap<String, String> extra = new java.util.HashMap<>();
+                extra.put("seed", "7");
+                gc.setExtra(extra);
+                t.generateWithConfig("Hello.", gc);                      // warm up
+                long t0 = System.nanoTime();
+                GeneratedAudio a = t.generateWithConfig(text, gc);
+                float secs = (System.nanoTime() - t0) / 1e9f, dur = a.getSamples().length / (float) RATE;
+                float f = dur > 0 ? secs / dur : 9f;
+                if (f < bestRtf) { bestRtf = f; best = th; }
+            }
+            prefs.edit().putInt("pocketThreads", best).putFloat("pocketRtf", bestRtf).apply();
+            rtf = bestRtf;
+        } catch (Throwable e) {
+            prefs.edit().putInt("pocketThreads", 4).apply();
+        } finally {
+            events.tuning(false);
+        }
+    }
+
+    /** Speech to collect before starting a passage that isn't ready yet. */
+    private long preRollMs(String text) {
+        float est = text.length() / 14.5f;            // seconds of speech, roughly
+        float need = est * Math.max(0f, 1f - 1f / Math.max(rtf, 0.01f));
+        return (long) ((need + (rtf > 0.85f ? 1.5f : 0.4f)) * 1000);
     }
 
     /* ---------------- Jobs ---------------- */
@@ -323,7 +373,7 @@ public class KokoroEngine {
                 queue.addFirst(mine);
             }
         }
-        speaker.playStream(id, sink, RATE, speed, pitch, pauseMs);
+        speaker.playStream(id, sink, RATE, speed, pitch, pauseMs, voice != null ? preRollMs(text) : 0);
         events.busy(queue.size());
     }
 
@@ -369,6 +419,7 @@ public class KokoroEngine {
                 boolean clone = j.voice != null;
                 if (clone ? !installed("pocket") : !installed()) throw new IllegalStateException(clone ? "The voice cloning pack isn't downloaded" : "Kokoro voices aren't downloaded");
                 if (clone && !hasVoice(j.voice)) throw new IllegalStateException("This voice's recording isn't on this phone");
+                if (clone) tuneIfNeeded(j.voice);
                 OfflineTts t = clone ? pocketModel() : model(j.sid);
                 GenerationConfig gc = null;
                 if (clone) {
@@ -386,8 +437,13 @@ public class KokoroEngine {
                 for (int[] s : sentences(j.text)) {
                     if (j.aborted) break;
                     String piece = j.text.substring(s[0], s[1]);
+                    long g0 = System.nanoTime();
                     GeneratedAudio a = clone ? t.generateWithConfig(piece, gc) : t.generate(piece, j.sid, 1.0f);
                     float[] f = a.getSamples();
+                    if (clone && f.length > RATE / 2) {
+                        float r = ((System.nanoTime() - g0) / 1e9f) / (f.length / (float) RATE);
+                        rtf = rtf * 0.8f + r * 0.2f;
+                    }
                     short[] pcm = new short[f.length];
                     byte[] bytes = new byte[f.length * 2];
                     for (int i = 0; i < f.length; i++) {
@@ -401,7 +457,7 @@ public class KokoroEngine {
                     Speaker.Chunk c = new Speaker.Chunk(pcm, s[0], false);
                     synchronized (j) { j.done.add(c); if (j.sink != null) j.sink.add(c); }
                 }
-                if (!j.aborted) { cache.put(j.key, all.toByteArray()); ok = true; }
+                if (!j.aborted) { cache.put(j.key, all.toByteArray()); ok = true; if (clone) prefs.edit().putFloat("pocketRtf", rtf).apply(); }
                 else err = "cancelled";
             } catch (Throwable e) {
                 err = String.valueOf(e.getMessage());
