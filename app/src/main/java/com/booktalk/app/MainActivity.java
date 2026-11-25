@@ -380,13 +380,13 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         public boolean voiceHas(String id) { return kokoro.hasVoice(id); }
 
         @JavascriptInterface
-        public void clonePlay(String id, String key, String text, String voice, double speed, int pauseMs) {
-            kokoro.play(id, key, text, 0, voice, (float) speed, pauseMs);
+        public void clonePlay(String id, String key, String text, String voice, double temp, double speed, double pitch, int pauseMs) {
+            kokoro.play(id, key, text, 0, voice, (float) temp, (float) speed, (float) pitch, pauseMs);
         }
 
         @JavascriptInterface
-        public void clonePrepare(String reqId, String key, String text, String voice) {
-            kokoro.prepare(reqId == null || reqId.isEmpty() ? null : reqId, key, text, 0, voice);
+        public void clonePrepare(String reqId, String key, String text, String voice, double temp) {
+            kokoro.prepare(reqId == null || reqId.isEmpty() ? null : reqId, key, text, 0, voice, (float) temp);
         }
 
         /** Download a small file (e.g. a sample voice) and hand it back as base64. */
@@ -416,12 +416,12 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         }
 
         @JavascriptInterface
-        public void exportChapter(String reqId, String book, String name, String itemsJson) {
+        public void exportChapter(String reqId, String book, String name, String itemsJson, double pitch) {
             new Thread(() -> {
                 JSONObject o = new JSONObject();
                 try {
                     o.put("type", "export").put("reqId", reqId);
-                    String where = AudiobookExporter.export(MainActivity.this, cache, book, name, new org.json.JSONArray(itemsJson));
+                    String where = AudiobookExporter.export(MainActivity.this, cache, book, name, new org.json.JSONArray(itemsJson), (float) pitch);
                     o.put("ok", true).put("where", where);
                 } catch (Throwable e) {
                     try { o.put("ok", false).put("msg", String.valueOf(e.getMessage())); } catch (JSONException ignored) { }

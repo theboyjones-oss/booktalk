@@ -176,7 +176,9 @@ public class Speaker {
     }
 
     /** Either raw bytes or base64 may be given. */
-    public void playPcmBytes(String id, byte[] raw, String b64, int rate, float speed, int pauseMs) {
+    public void playPcmBytes(String id, byte[] raw, String b64, int rate, float speed, int pauseMs) { playPcmBytes(id, raw, b64, rate, speed, 1f, pauseMs); }
+
+    public void playPcmBytes(String id, byte[] raw, String b64, int rate, float speed, float pitch, int pauseMs) {
         stopAll();
         final int myGen = gen;
         requestFocus();
@@ -197,7 +199,7 @@ public class Speaker {
                         .setTransferMode(AudioTrack.MODE_STREAM)
                         .build();
                 try {
-                    t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(1f));
+                    t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(pitch));
                 } catch (Exception ignored) { }
                 current = t;
                 int bufBytes = Math.max(minBuf * 4, 64 * 1024);
@@ -253,7 +255,9 @@ public class Speaker {
      * Play speech that is still being generated (Kokoro): chunks arrive on the queue one sentence
      * at a time; an end chunk finishes the item. Reports each sentence's text offset as it starts.
      */
-    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, int pauseMs) {
+    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, int pauseMs) { playStream(id, q, rate, speed, 1f, pauseMs); }
+
+    public void playStream(String id, java.util.concurrent.BlockingQueue<Chunk> q, int rate, float speed, float pitch, int pauseMs) {
         stopAll();
         final int myGen = gen;
         requestFocus();
@@ -269,7 +273,7 @@ public class Speaker {
                         .setBufferSizeInBytes(bufBytes)
                         .setTransferMode(AudioTrack.MODE_STREAM)
                         .build();
-                try { t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(1f)); } catch (Exception ignored) { }
+                try { t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(pitch)); } catch (Exception ignored) { }
                 current = t;
                 t.play();
                 long frames = 0;

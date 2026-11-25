@@ -61,6 +61,7 @@ public class KokoroEngine {
 
     private static class Job {
         String key, text, reqId, voice; int sid;   // voice != null -> cloned voice (Pocket TTS)
+        float temp = 0.7f;                          // Pocket TTS temperature: lower = steadier, higher = livelier
         volatile boolean aborted;
         final List<Speaker.Chunk> done = new ArrayList<>();
         final List<String> waiters = new ArrayList<>();   // extra reqIds to notify when finished
@@ -297,9 +298,11 @@ public class KokoroEngine {
     /** Listen now: stream the passage (or play it straight from the cache). */
     public void play(String id, String key, String text, int sid, float speed, int pauseMs) { play(id, key, text, sid, null, speed, pauseMs); }
 
-    public void play(String id, String key, String text, int sid, String voice, float speed, int pauseMs) {
+    public void play(String id, String key, String text, int sid, String voice, float speed, int pauseMs) { play(id, key, text, sid, voice, 0.7f, speed, 1f, pauseMs); }
+
+    public void play(String id, String key, String text, int sid, String voice, float temp, float speed, float pitch, int pauseMs) {
         byte[] saved = cache.get(key);
-        if (saved != null) { speaker.playPcmBytes(id, saved, null, RATE, speed, pauseMs); return; }
+        if (saved != null) { speaker.playPcmBytes(id, saved, null, RATE, speed, pitch, pauseMs); return; }
         BlockingQueue<Speaker.Chunk> sink = new LinkedBlockingQueue<>();
         synchronized (this) {
             Job r = running;
@@ -315,25 +318,27 @@ public class KokoroEngine {
                     synchronized (j) { for (String w : j.waiters) events.prepared(w, false, "cancelled"); }
                 }
                 queue.clear();
-                if (mine == null) { mine = new Job(); mine.key = key; mine.text = text; mine.sid = sid; mine.voice = voice; }
+                if (mine == null) { mine = new Job(); mine.key = key; mine.text = text; mine.sid = sid; mine.voice = voice; mine.temp = temp; }
                 mine.sink = sink;
                 queue.addFirst(mine);
             }
         }
-        speaker.playStream(id, sink, RATE, speed, pauseMs);
+        speaker.playStream(id, sink, RATE, speed, pitch, pauseMs);
         events.busy(queue.size());
     }
 
     /** Prepare a passage ahead of time; reqId may be null. */
     public void prepare(String reqId, String key, String text, int sid) { prepare(reqId, key, text, sid, null); }
 
-    public void prepare(String reqId, String key, String text, int sid, String voice) {
+    public void prepare(String reqId, String key, String text, int sid, String voice) { prepare(reqId, key, text, sid, voice, 0.7f); }
+
+    public void prepare(String reqId, String key, String text, int sid, String voice, float temp) {
         if (cache.has(key)) { if (reqId != null) events.prepared(reqId, true, ""); return; }
         synchronized (this) {
             Job r = running;
             if (r != null && key.equals(r.key) && !r.aborted) { if (reqId != null) synchronized (r) { r.waiters.add(reqId); } return; }
             for (Job q : queue) if (key.equals(q.key)) { if (reqId != null) synchronized (q) { q.waiters.add(reqId); } return; }
-            Job j = new Job(); j.key = key; j.text = text; j.sid = sid; j.reqId = reqId; j.voice = voice;
+            Job j = new Job(); j.key = key; j.text = text; j.sid = sid; j.reqId = reqId; j.voice = voice; j.temp = temp;
             queue.addLast(j);
         }
         events.busy(queue.size());
@@ -373,6 +378,9 @@ public class KokoroEngine {
                     gc.setReferenceSampleRate(r[0]);
                     gc.setNumSteps(5);
                     gc.setSpeed(1.0f);
+                    java.util.HashMap<String, String> extra = new java.util.HashMap<>();
+                    extra.put("temperature", String.valueOf(Math.max(0.1f, Math.min(1.5f, j.temp))));
+                    gc.setExtra(extra);
                 }
                 ByteArrayOutputStream all = new ByteArrayOutputStream();
                 for (int[] s : sentences(j.text)) {

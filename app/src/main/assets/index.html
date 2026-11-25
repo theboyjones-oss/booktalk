@@ -101,6 +101,11 @@ nav.tabs button.on{color:var(--ac)}
 #reader p.cur{color:var(--tx)}
 #reader p.done .w{color:inherit}
 #reader p.done{color:#57544f}
+#moodRow,.moodrow{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0 0 10px}
+#moodRow::-webkit-scrollbar,.moodrow::-webkit-scrollbar{display:none}
+.mb{flex:none;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:58px;padding:7px 6px;border-radius:12px;background:var(--s2);border:1px solid var(--line);font-size:11px;font-weight:600;color:var(--tx2)}
+.mb span{font-size:20px;line-height:1}
+.mb.on{background:var(--acbg);border-color:var(--ac);color:var(--ac2)}
 #pctl{padding:10px 16px 18px;background:linear-gradient(transparent,var(--bg) 22%);border-top:1px solid var(--line)}
 .seek{width:100%;accent-color:var(--ac);padding:0;border:0;background:none;height:24px}
 .ctl{display:flex;align-items:center;justify-content:space-between;margin:8px 4px 12px}
@@ -169,7 +174,7 @@ a{color:var(--ac2)}
   <!-- VOICES -->
   <section class="view" id="v-voices">
     <header class="top"><h1>Narrators</h1></header>
-    <p class="muted small" style="margin-top:0">Tap ▶ to hear someone's real voice, or <b>Hear them read</b> to hear them reading a book. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
+    <p class="muted small" style="margin-top:0">Tap ▶ to hear someone's real voice, or <b>Hear them read</b> to hear them reading a book in the mood you pick. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
     <div id="narrList"></div>
   </section>
 
@@ -213,6 +218,7 @@ a{color:var(--ac2)}
       <button class="iconbtn" id="cNext" title="Forward"><svg viewBox="0 0 24 24"><path d="m4 18 8.5-6L4 6zm9-12v12l8.5-6z"/></svg></button>
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
+    <div id="moodRow"></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
       <button class="chip" id="chSpeed"></button>
@@ -957,7 +963,7 @@ const Pocket = {
     $$('.pocketInst').forEach(el => renderPocketInstall(el));
   },
   refresh() { this.ready = !!(NATIVE && NATIVE.packInstalled && NATIVE.packInstalled('pocket')); return this.ready; },
-  key(text, voice) { return 'clone|' + hashText(text) + '|' + voice; },
+  key(text, voice, temp = 0.7) { return 'clone|' + hashText(text) + '|' + voice + (Math.abs(temp - 0.7) > 0.01 ? '|t' + temp : ''); },
 };
 
 /* ---------------- Player ---------------- */
@@ -986,6 +992,19 @@ function buildUnits(paras, max = MAX_UNIT) {
   flush();
   return units;
 }
+
+/* ---------------- Moods: how lively the narrator sounds (Pocket TTS temperature) + pitch + pace ---------------- */
+const NMOODS = [
+  { id: 'normal',  name: 'Normal',  icon: '🙂', temp: 0.7,  pitch: 1.00, pace: 1.00 },
+  { id: 'happy',   name: 'Happy',   icon: '😊', temp: 0.95, pitch: 1.03, pace: 1.04 },
+  { id: 'excited', name: 'Excited', icon: '🤩', temp: 1.15, pitch: 1.06, pace: 1.10 },
+  { id: 'calm',    name: 'Calm',    icon: '😌', temp: 0.45, pitch: 0.99, pace: 0.92 },
+  { id: 'sad',     name: 'Sad',     icon: '😢', temp: 0.4,  pitch: 0.95, pace: 0.86 },
+  { id: 'serious', name: 'Serious', icon: '🧐', temp: 0.35, pitch: 0.97, pace: 0.96 },
+  { id: 'spooky',  name: 'Spooky',  icon: '👻', temp: 0.55, pitch: 0.92, pace: 0.84 },
+];
+const moodOf = id => NMOODS.find(m => m.id === id) || NMOODS[0];
+const moodButtons = (cur, attr = 'data-mood') => NMOODS.map(m => `<button class="mb ${m.id === cur ? 'on' : ''}" ${attr}="${m.id}"><span>${m.icon}</span>${m.name}</button>`).join('');
 
 /* ---------------- Narrators (Kyutai sample voices, made on this phone by Pocket TTS) ---------------- */
 const PRESETS = [
@@ -1079,7 +1098,12 @@ const P = {
   included() { return this.meta.include.map((v, i) => v ? i : -1).filter(i => i >= 0); },
   unitsFor(ch) { if (!this.unitsCache.has(ch)) this.unitsCache.set(ch, buildUnits(this.content.chapters[ch].paras, MAX_UNIT)); return this.unitsCache.get(ch); },
   narrator() { return Narr.forBook(this.meta); },
-  key(text) { return Pocket.key(text, this.narrator().voice); },
+  mood() { return moodOf(this.meta?.mood); },
+  key(text) { return Pocket.key(text, this.narrator().voice, this.mood().temp); },
+  async changeMood(id) {
+    this.meta.mood = id; await DB.put('meta', this.meta);
+    NATIVE?.kokoroCancel?.(); renderPlayerMeta(); this.restartUnit();
+  },
 
   async open(id, autoplay) {
     if (this.meta && this.meta.id === id) { showPlayer(true); if (autoplay && !this.playing) this.play(); return; }
@@ -1132,25 +1156,25 @@ const P = {
     if (this.sleepAt && Date.now() >= this.sleepAt) { this.sleepAt = 0; renderSleepChip(); this.pause(); toast('Sleep timer: paused'); return; }
     this.curId = 'u' + tok;
     if (unit.scene) { Out.silence(this.curId, 1000); return; }
-    const k = this.key(unit.text), speed = clamp(S.speed, 0.5, 2.5);
+    const md = this.mood(), k = this.key(unit.text), speed = clamp(S.speed * md.pace, 0.5, 2.5);
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
-    NATIVE.clonePlay(this.curId, k, unit.text, this.narrator().voice, speed, unit.head ? 650 : 120);
+    NATIVE.clonePlay(this.curId, k, unit.text, this.narrator().voice, md.temp, speed, md.pitch, unit.head ? 650 : 120);
     this.ahead(S.prefetch + 1);
   },
   // Prepare upcoming passages in the background (saved, so they play instantly)
   ahead(n, wholeChapter) {
     if (!NATIVE || !Pocket.ready) return 0;
-    const v = this.narrator().voice, inc = this.included();
+    const v = this.narrator().voice, inc = this.included(), t = this.mood().temp;
     let ch = this.ch, u = this.u, count = 0;
     while (wholeChapter || count < n) {
       u++;
       if (u >= this.unitsFor(ch).length) { if (wholeChapter) break; const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; }
       const unit = this.unitsFor(ch)[u];
       if (unit.scene) continue;
-      const k = Pocket.key(unit.text, v);
+      const k = Pocket.key(unit.text, v, t);
       if (wholeChapter && NATIVE.cacheHas(k)) continue;
-      NATIVE.clonePrepare('', k, unit.text, v); count++;
+      NATIVE.clonePrepare('', k, unit.text, v, t); count++;
     }
     return count;
   },
@@ -1254,7 +1278,7 @@ const SAMPLE = 'The house at the end of the lane had been empty for years. Then,
 const Preview = {
   id: null, btn: null,
   // Hear a narrator actually reading (made on the phone)
-  async run(narId, btn) {
+  async run(narId, btn, moodId) {
     Out.stop(); if (P.playing) P.pause(); Narr.stopSample(); this.done();
     if (!Pocket.refresh()) { voicePackSheet(); return; }
     const id = this.id = 'pv' + uid(), n = Narr.get(narId);
@@ -1262,7 +1286,8 @@ const Preview = {
     try {
       await Narr.ensure(n.id);
       if (this.id !== id) return;
-      NATIVE.clonePlay(id, Pocket.key(SAMPLE, n.voice), SAMPLE, n.voice, clamp(S.speed, 0.5, 2.5), 0);
+      const md = moodOf(moodId);
+      NATIVE.clonePlay(id, Pocket.key(SAMPLE, n.voice, md.temp), SAMPLE, n.voice, md.temp, clamp(S.speed * md.pace, 0.5, 2.5), md.pitch, 0);
     } catch (e) { toast('Preview failed: ' + (e.message || e)); this.done(); }
   },
   started() { if (this.btn) this.btn.textContent = 'Playing…'; },
@@ -1276,9 +1301,10 @@ const Maker = {
     return meta.include.map((on, i) => on ? i : -1).filter(i => i >= 0)
       .map((ch, n) => ({ ch, n, title: content.chapters[ch].title, units: buildUnits(content.chapters[ch].paras, MAX_UNIT) }));
   },
-  keyFor(meta, text) { return Pocket.key(text, Narr.forBook(meta).voice); },
+  keyFor(meta, text) { return Pocket.key(text, Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
   statusText() { const j = this.job; if (!j) return ''; return j.state === 'paused' ? 'paused · ' + j.pct + '%' : j.state === 'done' ? 'done' : `${j.pct}% · chapter ${j.chNow}/${j.chTotal}`; },
   async sheet(meta) {
+    meta = (await DB.get('meta', meta.id)) || meta;   // always use the latest narrator/mood
     const content = await DB.get('content', meta.id);
     if (this.job && this.job.id === meta.id && this.job.state === 'running') {
       openSheet(`<h4>Saving as audiobook</h4><div class="small muted" id="mkSt">${esc(this.job.msg || '')}</div><div class="prog" style="margin:12px 0"><i id="mkBar" style="width:${this.job.pct}%"></i></div>
@@ -1294,9 +1320,9 @@ const Maker = {
     const hours = meta.words / 155 / 60;
     openSheet(`<h4>Save as audiobook</h4>
       <p class="small muted" style="margin-top:0">Makes the whole book and saves it as audio files, one per chapter, in <b>Music/BookTalk/${esc(AudioName(meta.title))}</b>. They play in any music or podcast app and can be copied anywhere.</p>
-      <div class="card"><b>🗣️ ${esc(n.name)}</b> <span class="small muted">· ${esc(n.desc)}</span>
+      <div class="card"><b>🗣️ ${esc(n.name)}</b> <span class="small muted">· ${esc(n.desc)} · ${moodOf(meta.mood).icon} ${moodOf(meta.mood).name}</span>
         <div class="small muted" style="margin-top:6px">${plan.length} chapters · about ${hours >= 1 ? hours.toFixed(1) + ' hours' : Math.round(hours * 60) + ' min'} of audio${done ? ` · ${Math.round(done / Math.max(1, units) * 100)}% already made` : ''}</div></div>
-      <p class="small muted">Free, made on this phone. A whole book takes hours, so start it with the phone on charge (overnight is ideal). To use a different narrator, change it on the book page first.</p>
+      <p class="small muted">Free, made on this phone. A whole book takes hours, so start it with the phone on charge (overnight is ideal). To use a different narrator or mood, change it on the book page first.</p>
       <button class="btn pri block" id="mkGo">${LS.get('make.' + meta.id, null) ? 'Continue' : 'Start'}</button>`, sh => {
       $('#mkGo', sh).onclick = () => { closeSheet(); this.run(meta, content); };
     });
@@ -1314,7 +1340,7 @@ const Maker = {
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
   },
-  gen(meta, text, key) { return this.call('clonePrepare', key, text, Narr.forBook(meta).voice); },
+  gen(meta, text, key) { return this.call('clonePrepare', key, text, Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
   update() {
     const j = this.job; if (!j) return;
     j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
@@ -1324,7 +1350,7 @@ const Maker = {
     if (!P.playing && j.state === 'running') Out.session(true, true, 'Saving audiobook · ' + j.pct + '%', j.title);   // keeps BookTalk awake while it works
   },
   async run(meta, content) {
-    const eng = 'narrator:' + Narr.forBook(meta).id;
+    const eng = 'narrator:' + Narr.forBook(meta).id + ':' + moodOf(meta.mood).id;
     try { await Narr.ensure(Narr.forBook(meta).id); } catch (e) { toast('Couldn\'t get the narrator\'s voice. Check your internet connection.', 5000); return; }
     const plan = this.plan(meta, content);
     const saved = LS.get('make.' + meta.id, null);
@@ -1359,7 +1385,7 @@ const Maker = {
         }
         if (exported.has(c.ch)) continue;
         j.msg = `Saving chapter ${c.n + 1} of ${plan.length}…`; this.update();
-        const ev = await this.call('exportChapter', meta.title, `${String(c.n + 1).padStart(2, '0')} - ${c.title}`, JSON.stringify(items));
+        const ev = await this.call('exportChapter', meta.title, `${String(c.n + 1).padStart(2, '0')} - ${c.title}`, JSON.stringify(items), moodOf(meta.mood).pitch);
         where = ev.where; exported.add(c.ch);
         LS.set('make.' + meta.id, { eng, exported: [...exported] });
       }
@@ -1393,6 +1419,7 @@ function setTab(tab) {
   if (tab === 'settings') renderSettings();
 }
 function showPlayer(on) {
+  if (!on && $('#player').classList.contains('on') && bookPageId) setTimeout(() => openBook(bookPageId), 0);   // reflect narrator/mood changes
   $('#player').classList.toggle('on', on);
   if (on) { renderPlayerMeta(); requestAnimationFrame(() => P.highlight(true)); }
   updateMini();
@@ -1494,12 +1521,20 @@ async function openBook(id) {
       <div class="grow"><div class="small muted">Narrator</div><b>${esc(Narr.forBook(m).name)}</b> <span class="small muted">· ${esc(Narr.forBook(m).desc)}</span></div>
       <button class="btn">Change</button>
     </div>
+    <label class="f">Mood <span style="font-weight:400">· how ${esc(Narr.forBook(m).name)} sounds</span></label>
+    <div class="moodrow" id="bkMood">${moodButtons(moodOf(m.mood).id)}</div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
       <div class="ch ${m.include[i] ? '' : 'off'}" data-i="${i}"><div class="grow"><div class="n">${esc(c.title)}</div>${c.why ? `<div class="why">${esc(c.why)}</div>` : ''}</div><button class="tog ${m.include[i] ? 'on' : ''}"></button></div>`).join('')}</div>
     <p class="small muted">Sections that look like covers, contents, copyright pages, acknowledgements or indexes are switched off. Switch any back on if you want them read.</p>`;
   $('#bkPlay').onclick = () => P.open(id, true);
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
+  $$('#bkMood [data-mood]').forEach(b => b.onclick = async () => {
+    m.mood = b.dataset.mood; await DB.put('meta', m);
+    $$('#bkMood [data-mood]').forEach(x => x.classList.toggle('on', x === b));
+    if (P.meta?.id === id) await P.changeMood(m.mood);
+    Preview.run(Narr.forBook(m).id, null, m.mood);
+  });
   $('#bkNarr').onclick = () => Narr.picker({ title: 'Narrator for this book', current: Narr.forBook(m).id, onPick: async nid => {
     m.narrator = nid; await DB.put('meta', m);
     if (P.meta?.id === id) await P.changeNarrator(nid);
@@ -1591,6 +1626,8 @@ function renderPlayerMeta() {
   const inc = P.included();
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
+  $('#moodRow').innerHTML = moodButtons(P.mood().id);
+  $$('#moodRow [data-mood]').forEach(b => b.onclick = () => P.changeMood(b.dataset.mood));
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
   if (!P.playing) setStatus('');
@@ -1672,9 +1709,10 @@ function updateMini() {
 }
 
 /* ---------------- UI: narrators tab ---------------- */
+let previewMood = 'normal';
 function renderNarrators() {
   const cur = S.narrator;
-  $('#narrList').innerHTML = (Pocket.refresh() || !NATIVE ? '' : `<div class="card" style="margin-bottom:12px"><b>One more step</b><div class="small muted" style="margin:4px 0 10px">Download the narrator voice pack (98 MB, once) so these voices can read on your phone.</div><div class="pocketInst"></div></div>`) +
+  $('#narrList').innerHTML = `<label class="f" style="margin-top:0">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>` + (Pocket.refresh() || !NATIVE ? '' : `<div class="card" style="margin-bottom:12px"><b>One more step</b><div class="small muted" style="margin:4px 0 10px">Download the narrator voice pack (98 MB, once) so these voices can read on your phone.</div><div class="pocketInst"></div></div>`) +
     PRESETS.map(([id, n, d, path]) => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-hear="${path}" title="Hear their real voice">${ICON.play}</button>
       <div class="grow"><b>${n}</b>${id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${d}</div>
@@ -1683,7 +1721,8 @@ function renderNarrators() {
     `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`;
   $$('#narrList .pocketInst').forEach(el => renderPocketInstall(el));
   $$('#narrList [data-hear]').forEach(b => b.onclick = () => Narr.hear(b, b.dataset.hear));
-  $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b));
+  $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b, previewMood));
+  $$('#nvMood [data-mood]').forEach(b => b.onclick = () => { previewMood = b.dataset.mood; $$('#nvMood [data-mood]').forEach(x => x.classList.toggle('on', x === b)); });
   $$('#narrList [data-use]').forEach(b => b.onclick = async () => {
     const id = b.dataset.use; b.textContent = '…';
     try { await Narr.ensure(id); } catch (e) { toast('Couldn\'t get that voice. Check your internet connection.'); renderNarrators(); return; }

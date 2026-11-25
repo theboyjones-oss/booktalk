@@ -30,10 +30,12 @@ public class AudiobookExporter {
     static final int RATE = 24000;
 
     /** items: [{"k": cacheKey|null, "gap": ms}]. Returns a human-readable location. */
-    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items) throws Exception {
+    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items) throws Exception { return export(ctx, cache, book, name, items, 1f); }
+
+    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch) throws Exception {
         File tmp = new File(ctx.getCacheDir(), "export-" + System.nanoTime() + ".m4a");
         try {
-            encode(cache, items, tmp);
+            encode(cache, items, tmp, pitch);
             String folder = "BookTalk/" + clean(book);
             String file = clean(name) + ".m4a";
             if (Build.VERSION.SDK_INT >= 29) {
@@ -80,7 +82,23 @@ public class AudiobookExporter {
     }
 
     /** Streams all PCM pieces through an AAC encoder into an MPEG-4 file. */
-    private static void encode(AudioCache cache, JSONArray items, File out) throws Exception {
+    /** Linear resample: playing faster/slower raises/lowers pitch (the mood's pitch, baked into the file). */
+    static byte[] resample(byte[] pcm, float factor) {
+        if (pcm == null || Math.abs(factor - 1f) < 0.005f) return pcm;
+        int n = pcm.length / 2, m = (int) (n / factor);
+        byte[] out = new byte[m * 2];
+        for (int i = 0; i < m; i++) {
+            float x = i * factor; int a = (int) x; float f = x - a;
+            int b = Math.min(a + 1, n - 1); a = Math.min(a, n - 1);
+            short sa = (short) ((pcm[a * 2] & 0xff) | (pcm[a * 2 + 1] << 8));
+            short sb = (short) ((pcm[b * 2] & 0xff) | (pcm[b * 2 + 1] << 8));
+            short v = (short) Math.round(sa + (sb - sa) * f);
+            out[i * 2] = (byte) (v & 0xff); out[i * 2 + 1] = (byte) ((v >> 8) & 0xff);
+        }
+        return out;
+    }
+
+    private static void encode(AudioCache cache, JSONArray items, File out, float pitch) throws Exception {
         MediaFormat fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, RATE, 1);
         fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, 64000);
@@ -112,7 +130,7 @@ public class AudiobookExporter {
                                 if (item >= items.length()) break;
                                 JSONObject it = items.getJSONObject(item++);
                                 String k = it.optString("k", "");
-                                byte[] pcm = k.isEmpty() ? null : cache.get(k);
+                                byte[] pcm = k.isEmpty() ? null : resample(cache.get(k), pitch);
                                 int gap = it.optInt("gap", 0);
                                 int silence = (int) ((long) RATE * gap / 1000) * 2;
                                 int len = (pcm != null ? pcm.length : 0) + silence;
