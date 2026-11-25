@@ -112,12 +112,14 @@ public class Speaker {
                 }
                 @Override public void onStop(String id, boolean interrupted) { }
             });
+            lastVoice = null;
             ttsReady = true;
             listener.onVoicesReady();
         }, engine);
     }
 
     public void speak(String id, String text, float pitch, float rate, String voiceName, int pauseMs) {
+        lastVoice = null;
         stopPcm();
         if (!ttsReady) { listener.onError(id, "Built-in voice is still starting"); return; }
         requestFocus();
@@ -145,6 +147,48 @@ public class Speaker {
         } else {
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, id);
         }
+    }
+
+    /** BibleTalk-style playback: queue passages back to back in the phone's own TTS engine so there are no gaps.
+     *  flush=true starts a new queue (stops anything playing); flush=false appends. Empty text = a pause. */
+    public void queue(String id, String text, float pitch, float rate, String voiceName, int pauseMs, boolean flush) {
+        if (flush) stopPcm();
+        if (!ttsReady) { listener.onError(id, "Phone voice is still starting"); return; }
+        if (flush) requestFocus();
+        int mode = flush ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+        if (text == null || text.trim().isEmpty()) { tts.playSilentUtterance(Math.max(1, pauseMs), mode, id); return; }
+        tts.setPitch(pitch);
+        tts.setSpeechRate(rate);
+        applyVoice(voiceName);
+        Bundle params = new Bundle();
+        if (pauseMs > 0) {
+            tts.speak(text, mode, params, id + TAIL);
+            tts.playSilentUtterance(pauseMs, TextToSpeech.QUEUE_ADD, id);
+        } else {
+            tts.speak(text, mode, params, id);
+        }
+    }
+
+    private String lastVoice = null;
+    private void applyVoice(String voiceName) {
+        String want = voiceName == null ? "" : voiceName;
+        if (want.equals(lastVoice)) return;
+        boolean set = false;
+        if (!want.isEmpty()) {
+            try {
+                Set<Voice> vs = tts.getVoices();
+                if (vs != null) for (Voice v : vs) {
+                    if (v.getName().equals(want)) { tts.setVoice(v); set = true; break; }
+                }
+            } catch (Exception ignored) { }
+        }
+        if (!set) {
+            try {
+                Voice def = tts.getDefaultVoice();
+                if (def != null) tts.setVoice(def); else tts.setLanguage(Locale.UK);
+            } catch (Exception ignored) { }
+        }
+        lastVoice = want;
     }
 
     public String voicesJson() {

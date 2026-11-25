@@ -284,6 +284,11 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         }
 
         @JavascriptInterface
+        public void ttsQueue(String id, String text, double pitch, double rate, String voice, int pauseMs, boolean flush) {
+            speaker.queue(id, text, (float) pitch, (float) rate, voice, pauseMs, flush);
+        }
+
+        @JavascriptInterface
         public void pcmPlay(String id, String b64, int sampleRate, double speed, int pauseMs) {
             speaker.playPcm(id, b64, sampleRate, (float) speed, pauseMs);
         }

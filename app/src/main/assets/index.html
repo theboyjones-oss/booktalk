@@ -151,6 +151,7 @@ label.f{display:block;font-size:12px;color:var(--tx2);margin:14px 2px 6px;font-w
 #toast.on{opacity:1;transform:translateX(-50%)}
 #sheet.on ~ #toast{top:calc(env(safe-area-inset-top) + 24px);bottom:auto}
 a{color:var(--ac2)}
+.sect{margin:10px 2px 4px}.sect b{font-size:15px}
 </style>
 </head>
 <body>
@@ -917,6 +918,19 @@ const Out = {
     u.onerror = e => { if (e.error !== 'interrupted' && e.error !== 'canceled') onNative({ type: 'error', id, msg: e.error }); };
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   },
+  // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
+  phoneSay(id, text, pitch, rate, voice, pauseMs, flush) {
+    if (NATIVE) { NATIVE.ttsQueue(id, text || '', pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
+    if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
+    const u = new SpeechSynthesisUtterance(text || ' ');
+    u.pitch = pitch; u.rate = rate; u.lang = 'en-GB'; if (!text) u.volume = 0;
+    const v = speechSynthesis.getVoices().find(v => v.name === voice); if (v) u.voice = v;
+    u.onstart = () => onNative({ type: 'start', id, dur: -1 });
+    u.onboundary = e => onNative({ type: 'range', id, start: e.charIndex });
+    u.onend = () => onNative({ type: 'done', id });
+    u.onerror = e => { if (e.error !== 'interrupted' && e.error !== 'canceled') onNative({ type: 'error', id, msg: e.error }); };
+    speechSynthesis.speak(u);
+  },
   silence(id, ms) {
     if (NATIVE) { NATIVE.silence(id, ms); return; }
     this.stopWeb(); this.silT = setTimeout(() => onNative({ type: 'done', id }), ms);
@@ -1031,11 +1045,55 @@ const PRESETS = [
   ['jane', 'Jane', 'American woman', 'vctk/p339_023_enhanced.wav'],
   ['eve', 'Eve', 'American woman', 'vctk/p361_023_enhanced.wav'],
 ];
+/* ---------------- Phone voices (the phone's own Google voices, as in BibleTalk: instant, gap-free) ---------------- */
+const REGIONS = { GB: 'British', US: 'American', AU: 'Australian', IN: 'Indian', IE: 'Irish', ZA: 'South African', NG: 'Nigerian', CA: 'Canadian', NZ: 'New Zealand', SG: 'Singapore', PH: 'Philippine', KE: 'Kenyan', GH: 'Ghanaian', TZ: 'Tanzanian' };
+const REGION_ORDER = ['GB', 'IE', 'AU', 'NZ', 'US', 'CA', 'ZA', 'IN', 'NG'];
+const Phone = {
+  is(id) { return typeof id === 'string' && id.startsWith('tts:'); },
+  _list: null,
+  refresh() { this._list = null; Out.loadVoices(); return this.list(); },
+  // English voices, one per voice (offline copy preferred), with friendly names
+  list() {
+    if (this._list) return this._list;
+    const all = Out.voices.length ? Out.voices : Out.loadVoices();
+    let pool = all.filter(v => /^en/i.test(v.lang || ''));
+    if (!pool.length) pool = all;
+    const by = new Map();
+    for (const v of pool) {
+      const m = (v.name || '').match(/^([a-z]{2,3}-[a-z]{2,4})-x-([a-z0-9]+)-(local|network)$/i);
+      const key = m ? (m[1] + '-' + m[2]).toLowerCase() : v.name;
+      const prev = by.get(key);
+      if (!prev || (prev.network && !v.network)) by.set(key, v);
+    }
+    const reg = v => ((v.lang || '').split(/[-_]/)[1] || '').toUpperCase();
+    const rank = v => { const i = REGION_ORDER.indexOf(reg(v)); return i < 0 ? 99 : i; };
+    const count = {};
+    const out = [...by.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).map(v => {
+      const r = REGIONS[reg(v)] || (v.lang || 'Other');
+      count[r] = (count[r] || 0) + 1;
+      return { id: 'tts:' + v.name, tts: v.name, name: r + ' voice ' + count[r], desc: v.network ? 'Phone voice · needs internet' : 'Phone voice · instant, works offline', phone: true, network: !!v.network };
+    });
+    if (out.length) this._list = out;
+    return out;
+  },
+  get(id) {
+    const name = String(id).slice(4);
+    if (!name) return { id: 'tts:', tts: '', name: 'Phone voice', desc: "Your phone's default voice · instant", phone: true };
+    return this.list().find(v => v.tts === name) || { id, tts: name, name: 'Phone voice', desc: 'Phone voice · instant', phone: true };
+  },
+  best() { const l = this.list(); return (l.find(v => !v.network) || l[0] || { id: 'tts:' }).id; },
+  moreVoices() { if (NATIVE?.openVoiceSettings) NATIVE.openVoiceSettings(); else toast('Add voices in your phone\'s Text-to-speech settings'); },
+};
 const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
 const Narr = {
-  get(id) { const p = PRESETS.find(x => x[0] === id) || PRESETS.find(x => x[0] === S.narrator) || PRESETS[0]; return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] }; },
-  forBook(meta) { return this.get(meta && PRESETS.some(x => x[0] === meta.narrator) ? meta.narrator : S.narrator); },
-  has(id) { return !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
+  valid(id) { return Phone.is(id) || PRESETS.some(x => x[0] === id); },
+  get(id) {
+    if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : PRESETS[0][0];
+    if (Phone.is(id)) return Phone.get(id);
+    const p = PRESETS.find(x => x[0] === id); return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] };
+  },
+  forBook(meta) { return this.get(meta && this.valid(meta.narrator) ? meta.narrator : S.narrator); },
+  has(id) { return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
   loading: new Map(),
   // Make sure the narrator's sample is on the phone (downloads ~1 MB the first time)
   ensure(id) {
@@ -1051,7 +1109,22 @@ const Narr = {
     return pr;
   },
   sample: null,
-  stopSample() { if (this.sample) { this.sample.pause(); this.sample = null; } $$('[data-hear]').forEach(x => { x.dataset.on = ''; x.innerHTML = ICON.play; }); },
+  stopSample() { if (this.sample) { this.sample.pause(); this.sample = null; } $$('[data-hear],[data-phear]').forEach(x => { x.dataset.on = ''; x.innerHTML = ICON.play; }); if (Preview.id && Preview.icon) { Out.stop(); Preview.done(); } },
+  // Hear a phone voice (instant)
+  hearPhone(btn, id) {
+    const was = btn.dataset.on === '1';
+    this.stopSample(); Out.stop(); Preview.done();
+    if (was) return;
+    if (P.playing) P.pause();
+    btn.dataset.on = '1'; btn.innerHTML = ICON.pause;
+    Preview.run(id, null, 'normal', btn);
+  },
+  phoneRows(current, pickAttr) {
+    const l = Phone.list();
+    return (l.length ? l : [Phone.get('tts:')]).map(v => `<div class="opt ${v.id === current ? 'on' : ''}" style="padding:8px 2px">
+        <button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button>
+        <button class="grow" ${pickAttr}="${esc(v.id)}" style="text-align:left;padding:6px 4px"><b>${esc(v.name)}${v.id === current ? ' ✓' : ''}</b><div class="small muted">${esc(v.desc)}</div></button></div>`).join('');
+  },
   async hear(btn, path) {
     const was = btn.dataset.on === '1';
     this.stopSample(); Out.stop(); Preview.done();
@@ -1068,14 +1141,21 @@ const Narr = {
   // The one place to choose a narrator. onPick(id) is called once their voice is on the phone.
   picker({ title = 'Choose a narrator', current, onPick }) {
     openSheet(`<h4>${esc(title)}</h4>
-      <p class="small muted" style="margin-top:0">Tap ▶ to hear each person, then tap their name to choose them.</p>
+      <p class="small muted" style="margin-top:0">Tap ▶ to hear each voice, then tap the name to choose it.</p>
+      <div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>
+      ${this.phoneRows(current, 'data-pick')}
+      <button class="btn ghost block" data-more style="margin:6px 0 4px">Get more phone voices</button>
+      <div class="sect" style="margin-top:14px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>
       ${PRESETS.map(([id, n, d, path]) => `<div class="opt ${id === current ? 'on' : ''}" style="padding:8px 2px">
         <button class="iconbtn" data-hear="${path}" style="width:40px;height:40px">${ICON.play}</button>
         <button class="grow" data-pick="${id}" style="text-align:left;padding:6px 4px"><b>${n}${id === current ? ' ✓' : ''}</b><div class="small muted">${d}</div></button></div>`).join('')}
       <p class="small muted">Voices from Kyutai's open voice collection, recreated on this phone: free, offline and unlimited.</p>`, sh => {
       $$('[data-hear]', sh).forEach(b => b.onclick = () => this.hear(b, b.dataset.hear));
+      $$('[data-phear]', sh).forEach(b => b.onclick = () => this.hearPhone(b, b.dataset.phear));
+      $('[data-more]', sh).onclick = () => Phone.moreVoices();
       $$('[data-pick]', sh).forEach(b => b.onclick = async () => {
         this.stopSample();
+        if (Phone.is(b.dataset.pick)) { closeSheet(); onPick(b.dataset.pick); return; }
         const id = b.dataset.pick, label = b.querySelector('b');
         label.textContent = this.get(id).name + ' · getting voice…';
         try { await this.ensure(id); closeSheet(); onPick(id); }
@@ -1102,6 +1182,7 @@ const P = {
   narrator() { return Narr.forBook(this.meta); },
   mood() { return moodOf(this.meta?.mood); },
   key(text) { return Pocket.key(text, this.narrator().voice, this.mood().temp); },
+  isPhone() { return !!this.narrator().phone; },
   async changeMood(id) {
     this.meta.mood = id; await DB.put('meta', this.meta);
     NATIVE?.kokoroCancel?.(); renderPlayerMeta(); this.restartUnit();
@@ -1130,9 +1211,14 @@ const P = {
   },
   async play() {
     if (!this.meta) return;
+    const n = this.narrator();
+    if (n.phone) {
+      this.playing = true; renderPlayState();
+      Out.session(true, true, this.meta.title, this.chapterTitle());
+      this.step(); return;
+    }
     if (!NATIVE) { toast('BookTalk reads aloud in the Android app'); return; }
     if (!Pocket.refresh()) { voicePackSheet(); return; }
-    const n = this.narrator();
     if (!Narr.has(n.id)) {
       setStatus('loading');
       try { await Narr.ensure(n.id); } catch (e) { setStatus(''); toast('Couldn\'t get ' + n.name + '\'s voice. Check your internet connection, then try again.', 5000); return; }
@@ -1158,6 +1244,7 @@ const P = {
     if (!unit) return this.nextChapter(true);
     this.highlight(); this.savePos();
     if (this.sleepAt && Date.now() >= this.sleepAt) { this.sleepAt = 0; renderSleepChip(); this.pause(); toast('Sleep timer: paused'); return; }
+    if (this.isPhone()) { this.phoneQueue(tok, true); return; }
     this.curId = 'u' + tok;
     if (unit.scene) { Out.silence(this.curId, 1000); return; }
     const md = this.mood(), k = this.key(unit.text), speed = clamp(S.speed * md.pace, 0.5, 2.5);
@@ -1166,9 +1253,43 @@ const P = {
     NATIVE.clonePlay(this.curId, k, unit.text, this.narrator().voice, md.temp, speed, md.pitch, unit.head ? 650 : 120);
     this.ahead(S.prefetch + 1);
   },
+  /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
+  qEnd: -1,
+  phoneQueue(tok, flush) {
+    const md = this.mood(), n = this.narrator();
+    const rate = clamp(S.speed * md.pace, 0.5, 2.5), pitch = clamp(1 + (md.pitch - 1) * 2, 0.5, 2);
+    const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24);
+    if (from > to) return;
+    for (let i = from; i <= to; i++) {
+      const un = this.units[i], id = 'q' + tok + '_' + i;
+      if (un.scene) Out.phoneSay(id, '', 1, 1, n.tts, 1000, flush && i === from);
+      else Out.phoneSay(id, un.text, pitch, rate, n.tts, un.head ? 650 : 120, flush && i === from);
+    }
+    if (flush) { this.curId = 'q' + tok + '_' + from; Sync.prepare(this.units[from], this.curId, rate); setStatus('reading'); }
+    this.qEnd = to;
+  },
+  phoneEvent(type, id, msg) {
+    const m = /^q(\d+)_(\d+)$/.exec(id || ''); if (!m) return;
+    const tok = +m[1], i = +m[2];
+    if (tok !== this.token || !this.playing) return;
+    if (type === 'start') {
+      if (id === this.curId) return;
+      this.u = i; this.curId = id; this.errs = 0;
+      this.highlight(); this.savePos();
+      const md = this.mood(); Sync.prepare(this.units[i], id, clamp(S.speed * md.pace, 0.5, 2.5));
+      if (this.sleepAt && Date.now() >= this.sleepAt) { this.sleepAt = 0; renderSleepChip(); this.pause(); toast('Sleep timer: paused'); return; }
+      if (this.qEnd - i < 10) this.phoneQueue(tok, false);
+    } else if (type === 'done') {
+      if (i >= this.units.length - 1) { this.u = this.units.length - 1; this.nextChapter(true); }
+    } else if (type === 'error') {
+      this.errs = (this.errs || 0) + 1;
+      if (this.errs >= 3) { this.errs = 0; this.pause(); toast('The phone voice keeps failing (' + (msg || 'unknown error') + '). Try another voice, or check it\'s downloaded.', 5000); return; }
+      this.u = i; this.advance();
+    }
+  },
   // Prepare upcoming passages in the background (saved, so they play instantly)
   ahead(n, wholeChapter) {
-    if (!NATIVE || !Pocket.ready) return 0;
+    if (!NATIVE || !Pocket.ready || this.isPhone()) return 0;
     const v = this.narrator().voice, inc = this.included(), t = this.mood().temp;
     let ch = this.ch, u = this.u, count = 0;
     while (wholeChapter || count < n) {
@@ -1260,11 +1381,12 @@ function bookProgress(meta, content, ch, p) {
 function onNative(ev) {
   if (typeof ev === 'string') { try { ev = JSON.parse(ev); } catch { return; } }
   switch (ev.type) {
-    case 'done': if (ev.id === Preview.id) Preview.done(); else P.onDone(ev.id); break;
-    case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else P.onError(ev.id, ev.msg); break;
+    case 'done': if (ev.id === Preview.id) Preview.done(); else if (ev.id?.[0] === 'q') P.phoneEvent('done', ev.id); else P.onDone(ev.id); break;
+    case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else if (ev.id?.[0] === 'q') P.phoneEvent('error', ev.id, ev.msg); else P.onError(ev.id, ev.msg); break;
+    case 'voices': Phone.refresh(); if ($('#narrList')?.offsetParent) renderNarrators(); break;
     case 'kokinst': if (ev.pack === 'pocket') Pocket.onInstall(ev); break;
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
-    case 'start': Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
+    case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
     case 'media':
@@ -1281,10 +1403,18 @@ function onNative(ev) {
 /* ---------------- Voice preview ---------------- */
 const SAMPLE = 'The house at the end of the lane had been empty for years. Then, one wet November evening, a light came on in the attic window.';
 const Preview = {
-  id: null, btn: null,
+  id: null, btn: null, icon: null,
   // Hear a narrator actually reading (made on the phone)
-  async run(narId, btn, moodId) {
-    Out.stop(); if (P.playing) P.pause(); Narr.stopSample(); this.done();
+  async run(narId, btn, moodId, icon) {
+    if (!icon) { Out.stop(); if (P.playing) P.pause(); Narr.stopSample(); }
+    this.done();
+    if (Phone.is(narId)) {
+      const id = this.id = 'pv' + uid(), n = Phone.get(narId), md = moodOf(moodId);
+      this.btn = btn; this.icon = icon || null;
+      if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Playing…'; }
+      Out.phoneSay(id, SAMPLE, clamp(1 + (md.pitch - 1) * 2, 0.5, 2), clamp(S.speed * md.pace, 0.5, 2.5), n.tts, 0, true);
+      return;
+    }
     if (!Pocket.refresh()) { voicePackSheet(); return; }
     const id = this.id = 'pv' + uid(), n = Narr.get(narId);
     this.btn = btn; if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Preparing…'; }
@@ -1296,7 +1426,7 @@ const Preview = {
     } catch (e) { toast('Preview failed: ' + (e.message || e)); this.done(); }
   },
   started() { if (this.btn) this.btn.textContent = 'Playing…'; },
-  done() { if (this.btn) { this.btn.disabled = false; this.btn.textContent = this.btn.dataset.l || 'Hear them read'; } this.btn = null; this.id = null; },
+  done() { if (this.icon) { this.icon.dataset.on = ''; this.icon.innerHTML = ICON.play; this.icon = null; } if (this.btn) { this.btn.disabled = false; this.btn.textContent = this.btn.dataset.l || 'Hear them read'; } this.btn = null; this.id = null; },
 };
 
 /* ---------------- Save a whole book as an audiobook ---------------- */
@@ -1318,6 +1448,7 @@ const Maker = {
       return;
     }
     if (this.job && this.job.state === 'running') { toast('Already saving “' + this.job.title + '”. One book at a time.'); return; }
+    if (Narr.forBook(meta).phone) { openSheet(`<h4>Save as audiobook</h4><p class="muted" style="margin-top:0">Audiobook files are made with the AI narrators. This book uses a phone voice, which reads live and can't be saved as a file.</p><p class="small muted">To save one, change this book's narrator to an AI narrator first.</p><button class="btn block" onclick="closeSheet()">OK</button>`); return; }
     if (!Pocket.refresh()) { voicePackSheet(); return; }
     const n = Narr.forBook(meta), plan = this.plan(meta, content);
     const units = plan.reduce((a, c) => a + c.units.filter(u => !u.scene).length, 0);
@@ -1427,7 +1558,7 @@ const Prep = {
   },
   // Minutes of listening already prepared, continuously from where you are
   readyMins() {
-    if (!NATIVE || !P.meta || !Pocket.ready) return 0;
+    if (!NATIVE || !P.meta || !Pocket.ready || P.isPhone()) return 0;
     let secs = 0, n = 0;
     for (const unit of this.plan(4 * 3600)) {
       if (!NATIVE.cacheHas(P.key(unit.text))) break;
@@ -1478,6 +1609,10 @@ const Prep = {
     if (!P.playing) setStatus('');
   },
   sheet() {
+    if (P.isPhone() && !(this.job && this.job.state === 'running')) {
+      openSheet(`<h4>Nothing to get ready</h4><p class="muted" style="margin-top:0">${esc(P.narrator().name)} is one of your phone's own voices, so it starts instantly and reads straight through with no pauses.</p><p class="small muted">Getting audio ready is only needed for the AI narrators.</p><button class="btn block" onclick="closeSheet()">OK</button>`);
+      return;
+    }
     const ready = this.readyMins(), j = this.job, running = j && j.state === 'running';
     openSheet(`<h4>Get audio ready</h4>
       <p class="muted" style="margin-top:0">BookTalk makes the narration on this phone. Getting it ready in advance means it plays smoothly with no pauses. It carries on with the screen off; plugging in the charger is a good idea.</p>
@@ -1549,7 +1684,7 @@ function coverHtml(m) {
 async function renderLibrary() {
   const list = (await DB.all('meta')).sort((a, b) => (b.lastRead || b.added) - (a.lastRead || a.added));
   const el = $('#libList');
-  const banner = NATIVE && !Pocket.refresh() ? `<div class="card" style="margin-bottom:16px"><b>🎧 Get the narrator voices</b><div class="small muted" style="margin:4px 0 10px">A one-time download so BookTalk can read aloud on this phone.</div><div class="pocketInst"></div></div>` : '';
+  const banner = NATIVE && !Pocket.refresh() && !Phone.is(S.narrator) ? `<div class="card" style="margin-bottom:16px"><b>🎧 Get the narrator voices</b><div class="small muted" style="margin:4px 0 10px">A one-time download so BookTalk can read aloud on this phone.</div><div class="pocketInst"></div></div>` : '';
   if (!list.length) {
     el.innerHTML = banner + `<div class="empty"><div class="big">🎧</div><div style="font-size:18px;font-weight:650;color:var(--tx);margin-bottom:6px">Your library is empty</div>Tap <b>+</b> to add a book. EPUB, PDF, Kindle (MOBI/AZW3), FB2, DOCX, HTML and TXT all work.<br><br>BookTalk keeps only the story text: no page numbers, headers, footnotes or copyright pages.</div>`;
     $$('.pocketInst', el).forEach(x => renderPocketInstall(x));
@@ -1607,7 +1742,7 @@ async function openBook(id) {
     <div class="bhead">${coverHtml(m)}<div class="grow"><h3>${esc(m.title)}</h3><div class="muted">${esc(m.author || '')}</div>
       <div class="small muted" style="margin-top:6px">${esc(m.format)} · ${m.words.toLocaleString()} words · about ${mins >= 90 ? (mins / 60).toFixed(1) + ' hrs' : mins + ' min'} at 1×</div></div></div>
     <button class="btn pri block" id="bkPlay" style="margin-top:18px;padding:14px">${ICON.play} ${m.progress > 0.002 ? 'Continue listening · ' + Math.round(m.progress * 100) + '%' : 'Start listening'}</button>
-    ${NATIVE ? `<button class="btn block" id="bkPrep" style="margin-top:10px">⬇️ Get the next hour ready</button>` : ''}
+    ${NATIVE && !Narr.forBook(m).phone ? `<button class="btn block" id="bkPrep" style="margin-top:10px">⬇️ Get the next hour ready</button>` : ''}
     ${NATIVE ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
     <div class="card anal row" id="bkNarr" style="cursor:pointer">
       <div style="font-size:28px">🗣️</div>
@@ -1733,7 +1868,8 @@ function renderPlayState() {
 }
 function setStatus(state) {
   let idle = '<span class="dot"></span> Get audio ready';
-  if (!state) {
+  if (P.meta && P.isPhone()) idle = '<span class="dot g"></span> 📱 Instant';
+  else if (!state) {
     if (Prep.job?.state === 'running') idle = `<span class="dot l"></span> Getting ready ${Math.floor(Prep.job.done / Math.max(1, Prep.job.total) * 100)}%`;
     else { const m = Prep.readyMins(); if (m >= 1) idle = `<span class="dot g"></span> ${Prep.fmt(m)} ready`; }
   }
@@ -1806,7 +1942,16 @@ function updateMini() {
 let previewMood = 'normal';
 function renderNarrators() {
   const cur = S.narrator;
-  $('#narrList').innerHTML = `<label class="f" style="margin-top:0">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>` + (Pocket.refresh() || !NATIVE ? '' : `<div class="card" style="margin-bottom:12px"><b>One more step</b><div class="small muted" style="margin:4px 0 10px">Download the narrator voice pack (98 MB, once) so these voices can read on your phone.</div><div class="pocketInst"></div></div>`) +
+  const phone = Phone.list();
+  $('#narrList').innerHTML = `<label class="f" style="margin-top:0">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>
+    <div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk: start instantly and read with no pauses.</div></div>` +
+    (phone.length ? phone : [Phone.get('tts:')]).map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
+      <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
+      <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}</div>
+        <button class="small" data-read="${esc(v.id)}" style="color:var(--ac2);margin-top:4px">Hear it read</button></div>
+      <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') +
+    `<button class="btn ghost block" id="nvMore" style="margin-bottom:6px">Get more phone voices</button>
+    <div class="sect" style="margin-top:16px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>` + (Pocket.refresh() || !NATIVE ? '' : `<div class="card" style="margin-bottom:12px"><b>One more step</b><div class="small muted" style="margin:4px 0 10px">Download the narrator voice pack (98 MB, once) so these voices can read on your phone.</div><div class="pocketInst"></div></div>`) +
     PRESETS.map(([id, n, d, path]) => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-hear="${path}" title="Hear their real voice">${ICON.play}</button>
       <div class="grow"><b>${n}</b>${id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${d}</div>
@@ -1815,6 +1960,8 @@ function renderNarrators() {
     `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`;
   $$('#narrList .pocketInst').forEach(el => renderPocketInstall(el));
   $$('#narrList [data-hear]').forEach(b => b.onclick = () => Narr.hear(b, b.dataset.hear));
+  $$('#narrList [data-phear]').forEach(b => b.onclick = () => Narr.hearPhone(b, b.dataset.phear));
+  $('#nvMore').onclick = () => Phone.moreVoices();
   $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b, previewMood));
   $$('#nvMood [data-mood]').forEach(b => b.onclick = () => { previewMood = b.dataset.mood; $$('#nvMood [data-mood]').forEach(x => x.classList.toggle('on', x === b)); });
   $$('#narrList [data-use]').forEach(b => b.onclick = async () => {
@@ -1843,7 +1990,15 @@ function renderPocketInstall(el) {
   el.querySelector('[data-getpocket]').onclick = () => { NATIVE.packInstall('pocket'); Pocket.inst = { pack: 'pocket', stage: 'download', pct: 0 }; $$('.pocketInst').forEach(x => renderPocketInstall(x)); };
 }
 function voicePackSheet() {
-  openSheet(`<h4>Get the narrator voices</h4><p class="muted" style="margin-top:0">BookTalk's narrators are made right here on your phone, free and with no limits. They need a one-time download first.</p><div class="pocketInst"></div>`, sh => $$('.pocketInst', sh).forEach(el => renderPocketInstall(el)));
+  openSheet(`<h4>Get the narrator voices</h4><p class="muted" style="margin-top:0">BookTalk's AI narrators are made right here on your phone, free and with no limits. They need a one-time download first.</p><div class="pocketInst"></div>
+    <div class="card" style="margin-top:14px"><b>📱 Or use your phone's voices</b><div class="small muted" style="margin:4px 0 10px">The same voices as BibleTalk. No download, start instantly, no pauses.</div><button class="btn block" id="vpPhone">Use phone voices</button></div>`, sh => {
+    $$('.pocketInst', sh).forEach(el => renderPocketInstall(el));
+    $('#vpPhone', sh).onclick = async () => {
+      const id = Phone.best(); S.narrator = id; saveSettings();
+      if (P.meta && !Phone.is(P.meta.narrator)) { await P.changeNarrator(id); }
+      closeSheet(); renderLibrary(); toast(Narr.get(id).name + ' will read your books. Change it any time.', 4000);
+    };
+  });
 }
 
 /* ---------------- UI: settings ---------------- */
@@ -1851,7 +2006,8 @@ function renderSettings() {
   $('#setBody').innerHTML = `
     <h2>Narrator</h2>
     <div class="card row" id="sNarr" style="cursor:pointer"><div style="font-size:26px">🗣️</div><div class="grow"><div class="small muted">Default for new books</div><b>${esc(Narr.get(S.narrator).name)}</b> <span class="small muted">· ${esc(Narr.get(S.narrator).desc)}</span></div><button class="btn">Change</button></div>
-    <h2>Voice pack</h2>
+    <button class="btn ghost block" id="sMoreVoices" style="margin-top:10px">Get more phone voices</button>
+    <h2>AI narrator voice pack</h2>
     <div class="card"><div class="pocketInst"></div>${NATIVE && Pocket.refresh() ? '<button class="btn ghost" id="sPackDel" style="margin-top:10px">Remove (frees about 195 MB)</button>' : ''}</div>
     <h2>Reading</h2>
     <div class="card" style="padding:0 14px">
@@ -1865,6 +2021,7 @@ function renderSettings() {
     </div>
     <p class="small muted" style="text-align:center;margin-top:28px">BookTalk ${NATIVE?.appVersion ? esc(NATIVE.appVersion()) : ''} · your books and voices stay on this phone</p>`;
   $$('#setBody .pocketInst').forEach(el => renderPocketInstall(el));
+  $('#sMoreVoices').onclick = () => Phone.moreVoices();
   $('#sNarr').onclick = () => Narr.picker({ title: 'Default narrator for new books', current: S.narrator, onPick: id => { S.narrator = id; saveSettings(); renderSettings(); toast(Narr.get(id).name + ' will read new books'); } });
   $('#sPackDel')?.addEventListener('click', () => openSheet(`<h4>Remove narrator voices?</h4><p class="muted">Frees about 195 MB. BookTalk can't read aloud until you download them again.</p><div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="pdYes">Remove</button></div>`, sh => {
     $('#pdYes', sh).onclick = () => { P.pause(); NATIVE.packUninstall('pocket'); Pocket.refresh(); closeSheet(); renderSettings(); };
@@ -1886,7 +2043,7 @@ function renderSettings() {
   // Older versions could download Kokoro voices; they're no longer used, so free the space
   try { if (NATIVE?.kokoroInstalled && NATIVE.kokoroInstalled()) NATIVE.kokoroUninstall(); } catch {}
   await renderLibrary();
-  if (NATIVE && !Pocket.ready && !LS.get('packAsked', false)) { LS.set('packAsked', true); voicePackSheet(); }
+  if (NATIVE && !Pocket.ready && !Phone.is(S.narrator) && !LS.get('packAsked', false)) { LS.set('packAsked', true); voicePackSheet(); }
   const last = LS.get('lastBook', null);
   if (last) {
     const m = await DB.get('meta', last).catch(() => null);
