@@ -231,6 +231,15 @@ public class Speaker {
             try {
                 byte[] pcm = raw != null ? raw : Base64.decode(b64, Base64.DEFAULT);
                 if (myGen != gen) return;
+                Fx fx = Fx.make(fxJson, rate);
+                if (fx != null) {
+                    short[] sh = new short[pcm.length / 2];
+                    java.nio.ByteBuffer.wrap(pcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(sh);
+                    sh = fx.process(sh, 0, sh.length);
+                    byte[] b2 = new byte[sh.length * 2];
+                    java.nio.ByteBuffer.wrap(b2).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sh);
+                    pcm = b2;
+                }
                 int minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 t = new AudioTrack.Builder()
                         .setAudioAttributes(attrs)
@@ -290,6 +299,10 @@ public class Speaker {
     }
 
     /** A piece of generated speech for streaming playback. */
+    /** Voice Tuner sound effects for the AI narrators (JSON from the app; "" = none). */
+    volatile String fxJson = "";
+    public void setFx(String json) { fxJson = json == null ? "" : json; }
+
     public static class Chunk {
         public final short[] pcm; public final int offset; public final boolean end;
         public Chunk(short[] pcm, int offset, boolean end) { this.pcm = pcm; this.offset = offset; this.end = end; }
@@ -326,6 +339,7 @@ public class Speaker {
                 try { t.setPlaybackParams(new PlaybackParams().setSpeed(speed).setPitch(pitch)); } catch (Exception ignored) { }
                 current = t;
                 t.play();
+                final Fx fx = Fx.make(fxJson, rate);
                 long frames = 0;
                 boolean started = false, ended = false;
                 // Pre-roll: hold back until enough speech is ready (or the passage is complete)
@@ -349,8 +363,9 @@ public class Speaker {
                     if (!started) { listener.onStart(id, -1); started = true; }
                     listener.onRange(id, c.offset);
                     int off = 0;
-                    while (off < c.pcm.length && myGen == gen) {
-                        int n = t.write(c.pcm, off, Math.min(8192, c.pcm.length - off));
+                    short[] data = fx != null ? fx.process(c.pcm, 0, c.pcm.length) : c.pcm;
+                    while (off < data.length && myGen == gen) {
+                        int n = t.write(data, off, Math.min(8192, data.length - off));
                         if (n < 0) throw new IllegalStateException("AudioTrack write " + n);
                         off += n;
                     }
@@ -366,7 +381,8 @@ public class Speaker {
                     long head = t.getPlaybackHeadPosition() & 0xffffffffL;
                     if (head >= total || System.currentTimeMillis() > deadline) break;
                     if (written < padFrames) {
-                        int n = t.write(zeros, 0, (int) Math.min(zeros.length, padFrames - written), AudioTrack.WRITE_NON_BLOCKING);
+                        short[] z = fx != null ? fx.process(zeros, 0, zeros.length) : zeros;   // lets echoes and rooms ring out
+                        int n = t.write(z, 0, (int) Math.min(z.length, padFrames - written), AudioTrack.WRITE_NON_BLOCKING);
                         if (n < 0) break;
                         written += n;
                         if (n == 0) Thread.sleep(10);

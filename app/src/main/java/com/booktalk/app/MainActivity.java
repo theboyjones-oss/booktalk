@@ -424,12 +424,18 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         }
 
         @JavascriptInterface
-        public void exportChapter(String reqId, String book, String name, String itemsJson, double pitch) {
+        public void exportChapter(String reqId, String book, String name, String itemsJson, double pitch) { exportChapterFx(reqId, book, name, itemsJson, pitch, ""); }
+
+        @JavascriptInterface
+        public void setFx(String json) { speaker.setFx(json); }
+
+        @JavascriptInterface
+        public void exportChapterFx(String reqId, String book, String name, String itemsJson, double pitch, String fxJson) {
             new Thread(() -> {
                 JSONObject o = new JSONObject();
                 try {
                     o.put("type", "export").put("reqId", reqId);
-                    String where = AudiobookExporter.export(MainActivity.this, cache, book, name, new org.json.JSONArray(itemsJson), (float) pitch);
+                    String where = AudiobookExporter.export(MainActivity.this, cache, book, name, new org.json.JSONArray(itemsJson), (float) pitch, fxJson);
                     o.put("ok", true).put("where", where);
                 } catch (Throwable e) {
                     try { o.put("ok", false).put("msg", String.valueOf(e.getMessage())); } catch (JSONException ignored) { }

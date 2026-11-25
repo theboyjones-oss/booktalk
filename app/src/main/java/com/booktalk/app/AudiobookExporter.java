@@ -32,10 +32,12 @@ public class AudiobookExporter {
     /** items: [{"k": cacheKey|null, "gap": ms}]. Returns a human-readable location. */
     public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items) throws Exception { return export(ctx, cache, book, name, items, 1f); }
 
-    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch) throws Exception {
+    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch) throws Exception { return export(ctx, cache, book, name, items, pitch, ""); }
+
+    public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch, String fxJson) throws Exception {
         File tmp = new File(ctx.getCacheDir(), "export-" + System.nanoTime() + ".m4a");
         try {
-            encode(cache, items, tmp, pitch);
+            encode(cache, items, tmp, pitch, Fx.make(fxJson, RATE));
             String folder = "BookTalk/" + clean(book);
             String file = clean(name) + ".m4a";
             if (Build.VERSION.SDK_INT >= 29) {
@@ -98,7 +100,7 @@ public class AudiobookExporter {
         return out;
     }
 
-    private static void encode(AudioCache cache, JSONArray items, File out, float pitch) throws Exception {
+    private static void encode(AudioCache cache, JSONArray items, File out, float pitch, Fx fx) throws Exception {
         MediaFormat fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, RATE, 1);
         fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, 64000);
@@ -136,6 +138,12 @@ public class AudiobookExporter {
                                 int len = (pcm != null ? pcm.length : 0) + silence;
                                 cur = new byte[len];
                                 if (pcm != null) System.arraycopy(pcm, 0, cur, 0, pcm.length);
+                                if (fx != null && cur.length > 1) {   // Voice Tuner effects, baked in (silence too, so echoes ring out)
+                                    short[] sh = new short[cur.length / 2];
+                                    java.nio.ByteBuffer.wrap(cur).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(sh);
+                                    sh = fx.process(sh, 0, sh.length);
+                                    java.nio.ByteBuffer.wrap(cur).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sh);
+                                }
                                 pos = 0;
                                 continue;
                             }
