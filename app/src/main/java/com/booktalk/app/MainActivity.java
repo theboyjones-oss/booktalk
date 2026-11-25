@@ -64,6 +64,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         super.onCreate(savedInstanceState);
         instance = this;
 
+        if (java.net.CookieHandler.getDefault() == null) java.net.CookieHandler.setDefault(new java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL));
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         webView = new WebView(this);
@@ -400,14 +401,20 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         /** Download a small file (e.g. a sample voice) and hand it back as base64. */
         @JavascriptInterface
-        public void httpGet(String reqId, String url) {
+        public void httpGet(String reqId, String url) { httpGetRef(reqId, url, ""); }
+
+        /** Download with a Referer (and the cookies kept from earlier pages), like a browser following a link. */
+        @JavascriptInterface
+        public void httpGetRef(String reqId, String url, String referer) {
             net.execute(() -> {
                 JSONObject o = new JSONObject();
                 try {
                     o.put("type", "http").put("reqId", reqId);
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
                     c.setInstanceFollowRedirects(true);
-                    c.setRequestProperty("User-Agent", "BookTalk/" + appVersion() + " (Android ebook reader)");
+                    c.setRequestProperty("User-Agent", "BookTalk/" + appVersion() + " (Android ebook reader; +https://github.com/theboyjones-oss/booktalk)");
+                    c.setRequestProperty("Accept", "*/*");
+                    if (referer != null && !referer.isEmpty()) c.setRequestProperty("Referer", referer);
                     c.setConnectTimeout(20000);
                     c.setReadTimeout(60000);
                     int code = c.getResponseCode();

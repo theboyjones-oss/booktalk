@@ -2420,11 +2420,37 @@ const GUT_TOPICS = [
 const Gut = {
   q: '', topic: '', page: 1, list: [], more: false, loading: false, err: '', seq: 0, inLib: new Set(),
   cover: id => `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`,
+  covers: new Map(), coverQ: [], coverBusy: 0,
+  coverImg(id) {
+    const c = this.covers.get(id);
+    if (!NATIVE?.httpGet) return `<img loading="lazy" src="${this.cover(id)}" alt="" onerror="this.remove()">`;
+    return c ? (c === 'x' ? '' : `<img src="${c}" alt="">`) : `<img data-cid="${id}" alt="" style="display:none">`;
+  },
+  loadCovers() {
+    $$('img[data-cid]').forEach(img => { const id = +img.dataset.cid; if (!this.covers.has(id) && !this.coverQ.includes(id)) this.coverQ.push(id); });
+    this.pumpCovers();
+  },
+  async pumpCovers() {
+    while (this.coverBusy < 3 && this.coverQ.length) {
+      const id = this.coverQ.shift(); this.coverBusy++;
+      (async () => {
+        let url = 'x';
+        for (const [u, ref] of [[this.cover(id), `https://www.gutenberg.org/ebooks/${id}`], [`https://aleph.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`, '']]) {
+          try {
+            const ev = NATIVE.httpGetRef ? await Maker.call('httpGetRef', u, ref) : await Maker.call('httpGet', u);
+            if (ev.ok && ev.b64 && ev.b64.startsWith('/9j')) { url = 'data:image/jpeg;base64,' + ev.b64; break; }
+          } catch {}
+        }
+        this.covers.set(id, url);
+        $$(`img[data-cid="${id}"]`).forEach(img => { if (url === 'x') img.remove(); else { img.src = url; img.style.display = ''; img.removeAttribute('data-cid'); } });
+      })().finally(() => { this.coverBusy--; this.pumpCovers(); });
+    }
+  },
   // download through the app (no browser restrictions), with a time limit
-  async get(url, ms = 20000) {
+  async get(url, ms = 20000, ref = '') {
     const run = async () => {
       if (NATIVE?.httpGet) {
-        const ev = await Maker.call('httpGet', url);
+        const ev = NATIVE.httpGetRef ? await Maker.call('httpGetRef', url, ref) : await Maker.call('httpGet', url);
         if (!ev.ok) throw new Error(ev.msg || 'Download failed');
         const bin = atob(ev.b64), u8 = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
@@ -2502,7 +2528,7 @@ const Gut = {
     const head = this.q ? `Results for “${esc(this.q)}”` : (GUT_TOPICS.find(t => t[0] === this.topic) || GUT_TOPICS[0])[1];
     el.innerHTML = `<h2>${head}</h2>` +
       this.list.map(b => `<div class="gbook" data-id="${b.id}">
-        <div class="gcov"><img loading="lazy" src="${this.cover(b.id)}" alt="" onerror="this.remove()"><span>${esc(b.title.slice(0, 40))}</span></div>
+        <div class="gcov">${this.coverImg(b.id)}<span>${esc(b.title.slice(0, 40))}</span></div>
         <div class="grow ginfo"><b>${esc(b.title)}</b><div class="small muted">${esc(b.author || 'Unknown author')}</div>
           ${b.downloads ? `<div class="small muted">${b.downloads.toLocaleString()} downloads this month</div>` : ''}</div>
         ${this.inLib.has('gutenberg:' + b.id) ? `<button class="btn sm" data-openlib="${b.id}">✓ Open</button>` : `<button class="btn pri sm" data-get="${b.id}">Get</button>`}
@@ -2515,12 +2541,13 @@ const Gut = {
     $$('#gutList [data-get]').forEach(b => b.onclick = () => this.fetchBook(+b.dataset.get));
     $$('#gutList [data-openlib]').forEach(b => b.onclick = () => this.openInLib(+b.dataset.openlib));
     $('#gutMore') && ($('#gutMore').onclick = () => this.load(false));
+    this.loadCovers();
     $('#gutRetry') && ($('#gutRetry').onclick = () => this.load(this.list.length === 0));
   },
   detail(id) {
     const b = this.list.find(x => x.id === id); if (!b) return;
     const have = this.inLib.has('gutenberg:' + id);
-    openSheet(`<div class="row" style="align-items:flex-start;gap:14px"><div class="gcov big"><img src="${this.cover(id)}" alt="" onerror="this.remove()"><span>${esc(b.title.slice(0, 40))}</span></div>
+    openSheet(`<div class="row" style="align-items:flex-start;gap:14px"><div class="gcov big">${this.coverImg(id)}<span>${esc(b.title.slice(0, 40))}</span></div>
       <div class="grow"><h4 style="margin:0 0 4px">${esc(b.title)}</h4><div class="muted">${esc(b.author || 'Unknown author')}</div>
       ${b.subjects.length ? `<div class="gsubj">${b.subjects.slice(0, 4).map(x => `<span>${esc(x.split(' -- ')[0])}</span>`).join('')}</div>` : ''}</div></div>
       ${b.summary ? `<p class="muted" style="font-size:14px;line-height:1.5;max-height:40vh;overflow:auto">${esc(b.summary)}</p>` : ''}
@@ -2532,16 +2559,39 @@ const Gut = {
     const m = (await DB.all('meta')).find(x => x.src === 'gutenberg:' + id);
     if (m) { setTab('library'); openBook(m.id); }
   },
+  // where a book lives in Gutenberg's folder tree (1342 → 1/3/4/1342), as used by the mirrors
+  dirs(id) { const d = String(id); return d.length === 1 ? '0/' + d : d.slice(0, -1).split('').join('/') + '/' + d; },
+  // is this really the book (not an error page)?
+  valid(u8, ext) {
+    if (!u8 || u8.length < 800) return false;
+    if (ext === 'epub') return u8[0] === 0x50 && u8[1] === 0x4b;           // EPUB files are zips: start with "PK"
+    const head = new TextDecoder().decode(u8.slice(0, 400)).trim().toLowerCase();
+    return !head.startsWith('<');                                              // plain text, not an HTML error page
+  },
   async fetchBook(id) {
     const b = this.list.find(x => x.id === id) || { title: 'Book ' + id, author: '' };
     busy('Getting “' + b.title + '”', 'Downloading from Project Gutenberg…');
-    const tries = [['epub3.images', 'epub'], ['epub.images', 'epub'], ['epub.noimages', 'epub'], ['txt.utf-8', 'txt']];
+    const land = `https://www.gutenberg.org/ebooks/${id}`, dirs = this.dirs(id), UK = 'https://www.mirrorservice.org/sites/ftp.ibiblio.org/pub/docs/books/gutenberg';
+    // open the book's page first, like a browser does (Gutenberg sets a cookie there and expects links from it)
+    try { await this.get(land, 20000, 'https://www.gutenberg.org/ebooks/'); } catch {}
+    const tries = [
+      [`https://www.gutenberg.org/ebooks/${id}.epub3.images`, 'epub', land, 'Project Gutenberg'],
+      [`https://www.gutenberg.org/cache/epub/${id}/pg${id}-images-3.epub`, 'epub', land, 'Project Gutenberg'],
+      [`https://www.gutenberg.org/ebooks/${id}.epub.noimages`, 'epub', land, 'Project Gutenberg'],
+      [`https://aleph.gutenberg.org/cache/epub/${id}/pg${id}-images-3.epub`, 'epub', '', 'a Gutenberg mirror'],
+      [`https://gutenberg.pglaf.org/cache/epub/${id}/pg${id}-images-3.epub`, 'epub', '', 'a Gutenberg mirror'],
+      [`${UK}/${dirs}/${id}-0.txt`, 'txt', '', 'the UK Mirror Service'],
+      [`${UK}/${dirs}/${id}.txt`, 'txt', '', 'the UK Mirror Service'],
+      [`https://gutenberg.nabasny.com/${dirs}/${id}-0.txt`, 'txt', '', 'a Gutenberg mirror'],
+      [`https://www.gutenberg.org/ebooks/${id}.txt.utf-8`, 'txt', land, 'Project Gutenberg'],
+    ];
     let data = null, ext = 'epub', lastErr = null;
-    for (const [suffix, e] of tries) {
-      try { data = await this.get(`https://www.gutenberg.org/ebooks/${id}.${suffix}`, 90000); ext = e; if (data.length > 500) break; data = null; }
+    for (const [url, e, ref, from] of tries) {
+      $('#busyS') && ($('#busyS').textContent = 'Downloading from ' + from + '…');
+      try { const d = await this.get(url, 60000, ref); if (this.valid(d, e)) { data = d; ext = e; break; } lastErr = new Error('The download wasn\'t a book file'); }
       catch (err) { lastErr = err; }
     }
-    if (!data) { busy(false); openSheet(`<h4>Couldn't download that book</h4><p class="muted">${esc(lastErr?.message || 'Project Gutenberg didn\'t send the file.')}</p><button class="btn block" onclick="closeSheet()">OK</button>`); return; }
+    if (!data) { busy(false); openSheet(`<h4>Couldn't download that book</h4><p class="muted">Project Gutenberg and its mirrors didn't send the file (${esc(lastErr?.message || 'no reply')}). Gutenberg sometimes blocks mobile networks for a while. Try again later or on Wi-Fi.</p><button class="btn block" onclick="closeSheet()">OK</button>`); return; }
     $('#busyS') && ($('#busyS').textContent = 'Pulling out the story text…');
     const safe = b.title.replace(/[^\w\s-]/g, '').trim().slice(0, 60) || 'book';
     const newId = await importFile(new File([data], `${safe}.${ext}`), { src: 'gutenberg:' + id }, true);
