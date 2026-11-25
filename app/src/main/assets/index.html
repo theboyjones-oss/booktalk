@@ -920,7 +920,8 @@ const Out = {
   },
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
   phoneSay(id, text, pitch, rate, voice, pauseMs, flush) {
-    if (NATIVE) { NATIVE.ttsQueue(id, text || '', pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
+    text = speakable(text || '');
+    if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
     const u = new SpeechSynthesisUtterance(text || ' ');
     u.pitch = pitch; u.rate = rate; u.lang = 'en-GB'; if (!text) u.volume = 0;
@@ -979,7 +980,7 @@ const Pocket = {
     $$('.pocketInst').forEach(el => renderPocketInstall(el));
   },
   refresh() { this.ready = !!(NATIVE && NATIVE.packInstalled && NATIVE.packInstalled('pocket')); return this.ready; },
-  key(text, voice, temp = 0.7) { return 'clone|' + hashText(text) + '|' + voice + (Math.abs(temp - 0.7) > 0.01 ? '|t' + temp : ''); },
+  key(text, voice, temp = 0.7) { return 'clone|' + hashText(text) + '|' + voice + (Math.abs(temp - 0.7) > 0.01 ? '|t' + temp : '') + '|s2'; },
 };
 
 /* ---------------- Player ---------------- */
@@ -1007,6 +1008,48 @@ function buildUnits(paras, max = MAX_UNIT) {
   });
   flush();
   return units;
+}
+
+/* ---------------- Make text easy to say: apostrophes, hyphens, dashes, quotes, symbols ---------------- */
+const ELISIONS = /^(em|tis|twas|cause|til|n|round|bout|ere|neath|cos|ow)$/i;
+function speakable(t) {
+  if (!t) return t;
+  t = t.normalize('NFKC')
+    .replace(/[­​-‍⁠﻿]/g, '')                 // soft hyphens, zero-width characters
+    .replace(/[‐‑‒¯]/g, '-')                         // odd hyphen characters
+    .replace(/(\p{L})-[ \t]*\n[ \t]*(\p{Ll})/gu, '$1$2')                 // words split across lines in PDFs
+    .replace(/[‘’‚‛ʼʻ′`´]/g, "'")
+    .replace(/[“”„‟«»″"]/g, ' ');      // double quotes add nothing to speech
+  t = t.replace(/(^|\s)'?n'(?=\s)/gi, '$1 and ');                       // rock 'n' roll
+  // Apostrophes: keep the real ones (don't, O'Brien, the girls' room, 'em), drop quote marks
+  t = t.replace(/'/g, (m, i, str) => {
+    const a = str[i - 1] || ' ', b = str[i + 1] || ' ';
+    const L = /\p{L}/u, D = /\d/;
+    if (L.test(a) && L.test(b)) return "'";                              // don't, O'Brien, rock'n'roll
+    if (D.test(b) && !L.test(a)) return "'";                              // the '90s
+    if ((a === 's' || a === 'S') && /\s/.test(b) && /^\s+\p{Ll}/u.test(str.slice(i + 1, i + 4))) return "'"; // the girls' room
+    if (!L.test(a) && L.test(b)) { const w = (str.slice(i + 1).match(/^\p{L}+/u) || [''])[0]; if (ELISIONS.test(w)) return "'"; } // 'em, 'tis
+    if (L.test(a) && !L.test(b) && /in$/i.test(str.slice(Math.max(0, i - 4), i)) && /\p{L}{3}in$/u.test(str.slice(Math.max(0, i - 6), i))) return "'"; // nothin', goin'
+    return ' ';
+  });
+  t = t
+    .replace(/(\d)\s*[-–]\s*(\d)/g, '$1 to $2')                      // 1990-1995 → 1990 to 1995
+    .replace(/(\p{L})-(?=\p{L})/gu, '$1 ')                                // well-known → well known
+    .replace(/\s*(?:[–—―⸺⸻]|--+|\s-\s)\s*/g, ', ')   // dashes → a pause
+    .replace(/…|\.{3,}/g, '... ')
+    .replace(/&/g, ' and ').replace(/(\d)\s*%/g, '$1 percent').replace(/@/g, ' at ')
+    .replace(/(\p{L})\/(\p{L})/gu, '$1 or $2')
+    .replace(/[()[\]{}]/g, ', ')
+    .replace(/[*_~#|<>^\\=+]/g, ' ')
+    .replace(/\b(\p{Lu})(\p{Lu}{3,})\b/gu, (m, a, b) => a + b.toLowerCase())  // SHOUTING → Shouting (so it isn't spelled out)
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ ?, ?(?:, ?)+/g, ', ')                                      // collapse repeated pauses
+    .replace(/,\s*([.!?;:])/g, '$1').replace(/([.!?;:])\s*,/g, '$1')
+    .replace(/(^|\n)\s*,\s*/g, '$1')
+    .replace(/ +([.,!?;:])/g, '$1')
+    .replace(/ *\n */g, '\n')
+    .replace(/,\s*(?=\n|$)/g, '...');                                     // trailing dash: "I was going to say—"
+  return t.trim();
 }
 
 /* ---------------- Moods: how lively the narrator sounds (Pocket TTS temperature) + pitch + pace ---------------- */
@@ -1250,7 +1293,7 @@ const P = {
     const md = this.mood(), k = this.key(unit.text), speed = clamp(S.speed * md.pace, 0.5, 2.5);
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
-    NATIVE.clonePlay(this.curId, k, unit.text, this.narrator().voice, md.temp, speed, md.pitch, unit.head ? 650 : 120);
+    NATIVE.clonePlay(this.curId, k, speakable(unit.text), this.narrator().voice, md.temp, speed, md.pitch, unit.head ? 650 : 120);
     this.ahead(S.prefetch + 1);
   },
   /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
@@ -1299,7 +1342,7 @@ const P = {
       if (unit.scene) continue;
       const k = Pocket.key(unit.text, v, t);
       if (wholeChapter && NATIVE.cacheHas(k)) continue;
-      NATIVE.clonePrepare('', k, unit.text, v, t); count++;
+      NATIVE.clonePrepare('', k, speakable(unit.text), v, t); count++;
     }
     return count;
   },
@@ -1476,7 +1519,7 @@ const Maker = {
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
   },
-  gen(meta, text, key) { return this.call('clonePrepare', key, text, Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
+  gen(meta, text, key) { return this.call('clonePrepare', key, speakable(text), Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
   update() {
     const j = this.job; if (!j) return;
     j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
@@ -1584,7 +1627,7 @@ const Prep = {
       if (j.cancel) break;
       const k = Pocket.key(u.text, v, temp);
       for (let attempt = 0; attempt < 60 && !NATIVE.cacheHas(k) && !j.cancel; attempt++) {
-        try { await Maker.call('clonePrepare', k, u.text, v, temp); }
+        try { await Maker.call('clonePrepare', k, speakable(u.text), v, temp); }
         catch (e) { if (!e.cancelled && attempt > 2) break; await sleep(1200); }
       }
       j.done++; this.update();
