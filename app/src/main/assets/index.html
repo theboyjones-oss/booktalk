@@ -241,7 +241,7 @@ a{color:var(--ac2)}
   <!-- VOICES -->
   <section class="view" id="v-voices">
     <header class="top"><h1>Narrators</h1></header>
-    <p class="muted small" style="margin-top:0">Tap ▶ to hear someone's real voice, or <b>Hear them read</b> to hear them reading a book in the mood you pick. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
+    <p class="muted small" style="margin-top:0">Tap ▶ to hear a voice, or <b>Hear it read</b> to hear them reading a book in the mood you pick. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
     <div id="narrList"></div>
   </section>
 
@@ -290,7 +290,7 @@ a{color:var(--ac2)}
       <button class="chip" id="chMood"></button>
       <button class="chip" id="chSpeed"></button>
       <button class="chip" id="chSleep"></button>
-      <button class="chip" id="chEngine"></button>
+      <button class="chip" id="chEngine" style="display:none"></button>
     </div>
   </div>
 </section>
@@ -1230,7 +1230,7 @@ const Pro = {
   PRICE: '£3.99', FREE_VOICES: 1,
   get on() { return LS.get('pro', false); },
   set(v) { LS.set('pro', !!v); },
-  usesStudio(tune) { return !!resolveTune(tune).fx; },
+  usesStudio(tune) { return AI && !!resolveTune(tune).fx; },
   // why a voice can't be saved on the free version ('' = fine)
   why(tune, isNew) {
     if (this.on) return '';
@@ -1248,9 +1248,9 @@ const Pro = {
       <p class="muted" style="text-align:center;margin:0 0 14px">${lead}</p>
       <div class="pwlist">
         <div>♾️ <b>Unlimited voices</b><span>Make a whole cast of narrators</span></div>
-        <div>🎚️ <b>Sound studio</b><span>Warmth, clarity, rooms and 8 special effects</span></div>
+        ${AI ? `<div>🎚️ <b>Sound studio</b><span>Warmth, clarity, rooms and 8 special effects</span></div>
         <div>📖 <b>Every recipe</b><span>Bedtime story, Ghost story, Pirate radio, Robot butler and more</span></div>
-        <div>🎧 <b>Effects everywhere</b><span>In your books and in saved audiobooks</span></div>
+        <div>🎧 <b>Effects everywhere</b><span>In your books and in saved audiobooks</span></div>` : ''}
         <div>🤝 <b>Share voices</b><span>Send your creations to friends</span></div>
       </div>
       <button class="btn pri block" id="pwBuy" style="margin-top:14px;font-size:16px;padding:14px">Unlock Pro · ${this.PRICE}</button>
@@ -1292,6 +1292,9 @@ const PRESETS = [
   ['jane', 'Jane', 'American woman', 'vctk/p339_023_enhanced.wav'],
   ['eve', 'Eve', 'American woman', 'vctk/p361_023_enhanced.wav'],
 ];
+/* AI narrators (on-device Pocket TTS) are switched off: too slow on phones. Phone voices only. */
+const AI = false;
+
 /* ---------------- Phone voices (the phone's own Google voices, as in BibleTalk: instant, gap-free) ---------------- */
 const REGIONS = { GB: 'British', US: 'American', AU: 'Australian', IN: 'Indian', IE: 'Irish', ZA: 'South African', NG: 'Nigerian', CA: 'Canadian', NZ: 'New Zealand', SG: 'Singapore', PH: 'Philippine', KE: 'Kenyan', GH: 'Ghanaian', TZ: 'Tanzanian' };
 const REGION_ORDER = ['GB', 'IE', 'AU', 'NZ', 'US', 'CA', 'ZA', 'IN', 'NG'];
@@ -1333,9 +1336,9 @@ const Phone = {
 };
 const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
 const Narr = {
-  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || PRESETS.some(x => x[0] === id); },
+  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (AI && PRESETS.some(x => x[0] === id)); },
   get(id) {
-    if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : PRESETS[0][0];
+    if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : AI ? PRESETS[0][0] : Phone.best();
     if (CV.is(id)) { const c = CV.get(id), b = this.get(c.base); return { ...b, id: c.id, name: c.name, emoji: c.emoji || '🎛️', desc: 'Your voice · made from ' + b.name, custom: true, base: b.id, baseName: b.name, tune: c.tune }; }
     if (Phone.is(id)) return Phone.get(id);
     const p = PRESETS.find(x => x[0] === id); return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] };
@@ -1388,6 +1391,11 @@ const Narr = {
     } catch (e) { toast('Couldn\'t load the sample: ' + (e.message || e)); this.stopSample(); }
   },
   // The one place to choose a narrator. onPick(id) is called once their voice is on the phone.
+  aiRows(current) { return `      <div class="sect" style="margin-top:14px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>
+      ${PRESETS.map(([id, n, d, path]) => `<div class="opt ${id === current ? 'on' : ''}" style="padding:8px 2px">
+        <button class="iconbtn" data-hear="${path}" style="width:40px;height:40px">${ICON.play}</button>
+        <button class="grow" data-pick="${id}" style="text-align:left;padding:6px 4px"><b>${n}${id === current ? ' ✓' : ''}</b><div class="small muted">${d}</div></button></div>`).join('')}
+      <p class="small muted">Voices from Kyutai's open voice collection, recreated on this phone: free, offline and unlimited.</p>`; },
   myRows(current, pickAttr) {
     return CV.all().map(c => { const v = this.get(c.id); return `<div class="opt ${v.id === current ? 'on' : ''}" style="padding:8px 2px">
         <button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button>
@@ -1400,14 +1408,10 @@ const Narr = {
       <p class="small muted" style="margin-top:0">Tap ▶ to hear each voice, then tap the name to choose it.</p>
       ${noCustom ? '' : `<button class="btn block tunerbtn" data-tuner style="margin-bottom:6px">🎛️ ${current && !CV.is(current) ? 'Tune this voice in the Voice Tuner' : 'Open the Voice Tuner'}</button>`}
       ${mine}
-      <div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>
+      ${AI ? `<div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>` : (noCustom || !CV.all().length ? '' : `<div class="sect"><b>📱 Phone voices</b></div>`)}
       ${this.phoneRows(current, 'data-pick')}
       <button class="btn ghost block" data-more style="margin:6px 0 4px">Get more phone voices</button>
-      <div class="sect" style="margin-top:14px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>
-      ${PRESETS.map(([id, n, d, path]) => `<div class="opt ${id === current ? 'on' : ''}" style="padding:8px 2px">
-        <button class="iconbtn" data-hear="${path}" style="width:40px;height:40px">${ICON.play}</button>
-        <button class="grow" data-pick="${id}" style="text-align:left;padding:6px 4px"><b>${n}${id === current ? ' ✓' : ''}</b><div class="small muted">${d}</div></button></div>`).join('')}
-      <p class="small muted">Voices from Kyutai's open voice collection, recreated on this phone: free, offline and unlimited.</p>`, sh => {
+      ${AI ? this.aiRows(current) : ''}`, sh => {
       $$('[data-hear]', sh).forEach(b => b.onclick = () => this.hear(b, b.dataset.hear));
       $$('[data-phear]', sh).forEach(b => b.onclick = () => this.hearPhone(b, b.dataset.phear));
       $('[data-more]', sh).onclick = () => Phone.moreVoices();
@@ -1683,6 +1687,7 @@ const RECIPES = [
   { n: 'Chipmunk', e: '🐿️', t: { emo: { excited: 70, happy: 60 }, pitch: 9, speed: 1.25, live: 0.2, gap: 0.6 } },
   { n: 'Drama queen', e: '🎭', t: { emo: { excited: 60, sad: 50 }, pitch: 1, speed: 0.95, live: 0.4, gap: 1.4, spause: 3 } },
 ];
+if (!AI) for (let i = RECIPES.length - 1; i >= 0; i--) { const e = RECIPES[i].t.effect; if (e && e !== 'none' && e !== 'mega') RECIPES.splice(i, 1); }
 const EMOJIS = ['🎛️','🗣️','🧙','🧛','🧚','🧜','🦸','🕵️','👑','🎩','🤠','👻','🤖','👽','🐉','🦊','🦉','🐺','🐻','🐱','🌙','⭐','🔥','❄️','🌊','🍂','🎭','📻','🚀','💀','🌹','☕'];
 const NAME_A = ['Velvet', 'Midnight', 'Silver', 'Gentle', 'Thunder', 'Whisper', 'Golden', 'Rusty', 'Misty', 'Crimson', 'Jolly', 'Shadow', 'Copper', 'Honey', 'Stormy', 'Lucky'];
 const NAME_B = ['Fox', 'Owl', 'Storyteller', 'Captain', 'Raven', 'Bard', 'Wanderer', 'Duchess', 'Professor', 'Badger', 'Lantern', 'Pilot', 'Ghost', 'Sailor', 'Robin', 'Wizard'];
@@ -1736,7 +1741,7 @@ const Tuner = {
 
       <h2>Recipes</h2>
       <div class="trecipes">${RECIPES.map((r, i) => `<button class="trec" data-rec="${i}"><span>${r.e}</span>${esc(r.n)}${!Pro.on && Pro.usesStudio(r.t) ? ' <i class="lock">🔒</i>' : ''}</button>`).join('')}</div>
-      ${Pro.on ? '' : '<div class="small muted" style="margin-top:6px">🔒 recipes use the sound studio. Try them free, unlock Pro to save them.</div>'}
+      ${Pro.on || !AI ? '' : '<div class="small muted" style="margin-top:6px">🔒 recipes use the sound studio. Try them free, unlock Pro to save them.</div>'}
 
       <h2>Mood pad</h2>
       <div class="tcard">
@@ -1756,7 +1761,7 @@ const Tuner = {
         <div class="tseg" id="tuPause">${PAUSES.map((p, i) => `<button data-sp="${i}" class="${(t.spause ?? 1) === i ? 'on' : ''}">${p}</button>`).join('')}</div>
       </div>
 
-      <h2>Sound studio</h2>
+      ${AI ? `      <h2>Sound studio</h2>
       <div class="tcard">
         ${!phone && !Pro.on ? `<button class="prohint" id="tuStudioPro">🔒 <b>Pro</b> · Try every effect now. Unlock Pro to save voices that use them${d.id && Pro.usesStudio(t) ? ' and to hear them in your books' : ''}.</button>` : ''}
         ${phone ? `<div class="small muted">Sound effects work with the AI narrators. Phone voices are played by Android's own speech engine, which BookTalk can't add effects to. Change the voice above to an AI narrator to use the studio.</div>` : `
@@ -1767,6 +1772,7 @@ const Tuner = {
         <div class="tfx">${FX_LIST.map(f => `<button data-fx="${f.id}" class="${t.effect === f.id ? 'on' : ''}"><span>${f.icon}</span>${f.name}</button>`).join('')}</div>`}
       </div>
 
+` : ''}
       <h2>The result</h2>
       <div class="tcard" id="tuResult"></div>
 
@@ -2223,7 +2229,7 @@ function coverHtml(m) {
 async function renderLibrary() {
   const list = (await DB.all('meta')).sort((a, b) => (b.lastRead || b.added) - (a.lastRead || a.added));
   const el = $('#libList');
-  const banner = NATIVE && !Pocket.refresh() && !Phone.is(S.narrator) ? `<div class="card" style="margin-bottom:16px"><b>🎧 Get the narrator voices</b><div class="small muted" style="margin:4px 0 10px">A one-time download so BookTalk can read aloud on this phone.</div><div class="pocketInst"></div></div>` : '';
+  const banner = AI && NATIVE && !Pocket.refresh() && !Phone.is(S.narrator) ? `<div class="card" style="margin-bottom:16px"><b>🎧 Get the narrator voices</b><div class="small muted" style="margin:4px 0 10px">A one-time download so BookTalk can read aloud on this phone.</div><div class="pocketInst"></div></div>` : '';
   if (!list.length) {
     el.innerHTML = banner + `<div class="empty"><div class="big">🎧</div><div style="font-size:18px;font-weight:650;color:var(--tx);margin-bottom:6px">Your library is empty</div>Tap <b>+</b> to add a book. EPUB, PDF, Kindle (MOBI/AZW3), FB2, DOCX, HTML and TXT all work.<br><br>BookTalk keeps only the story text: no page numbers, headers, footnotes or copyright pages.</div>`;
     $$('.pocketInst', el).forEach(x => renderPocketInstall(x));
@@ -2282,7 +2288,7 @@ async function openBook(id) {
       <div class="small muted" style="margin-top:6px">${esc(m.format)} · ${m.words.toLocaleString()} words · about ${mins >= 90 ? (mins / 60).toFixed(1) + ' hrs' : mins + ' min'} at 1×</div></div></div>
     <button class="btn pri block" id="bkPlay" style="margin-top:18px;padding:14px">${ICON.play} ${m.progress > 0.002 ? 'Continue listening · ' + Math.round(m.progress * 100) + '%' : 'Start listening'}</button>
     ${NATIVE && !Narr.forBook(m).phone ? `<button class="btn block" id="bkPrep" style="margin-top:10px">⬇️ Get the next hour ready</button>` : ''}
-    ${NATIVE ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
+    ${NATIVE && AI ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
     <div class="card anal row" id="bkNarr" style="cursor:pointer">
       <div style="font-size:28px">🗣️</div>
       <div class="grow"><div class="small muted">Narrator</div><b>${esc(Narr.forBook(m).name)}</b> <span class="small muted">· ${esc(Narr.forBook(m).desc)}</span></div>
@@ -2484,7 +2490,7 @@ function renderNarrators() {
   const phone = Phone.list();
   const mine = CV.all().map(c => Narr.get(c.id));
   $('#narrList').innerHTML = `<div class="card tunercard" style="margin-bottom:14px">
-      <div class="row"><div style="font-size:34px">🎛️</div><div class="grow"><b style="font-size:17px">Voice Tuner</b> ${Pro.badge()}<div class="small muted">Shape any voice: emotions, pitch, speed, pauses, rooms and effects. Save it as your own narrator.</div></div></div>
+      <div class="row"><div style="font-size:34px">🎛️</div><div class="grow"><b style="font-size:17px">Voice Tuner</b> ${Pro.badge()}<div class="small muted">Shape any voice: emotions, pitch, speed and pauses. Save it as your own narrator.</div></div></div>
       <div class="row" style="gap:8px;margin-top:12px"><button class="btn pri grow" id="nvTune">Create a voice</button><button class="btn" id="nvImport">Import</button></div></div>
     ${mine.length ? `<div class="sect"><b>🎛️ My voices</b></div>` + mine.map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
@@ -2492,20 +2498,20 @@ function renderNarrators() {
         <div class="row" style="gap:14px;margin-top:4px"><button class="small" data-tedit="${esc(v.id)}" style="color:var(--ac2)">🎛️ Tune</button><button class="small" data-tshare="${esc(v.id)}" style="color:var(--ac2)">Share</button></div></div>
       <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : ''}
     <label class="f">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>
-    <div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk: start instantly and read with no pauses.</div></div>` +
+    <div class="sect"><b>📱 Phone voices</b><div class="small muted">Your phone's own voices: start instantly and read with no pauses. Use “Get more phone voices” to add accents.</div></div>` +
     (phone.length ? phone : [Phone.get('tts:')]).map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
       <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}</div>
         <button class="small" data-read="${esc(v.id)}" style="color:var(--ac2);margin-top:4px">Hear it read</button></div>
       <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') +
-    `<button class="btn ghost block" id="nvMore" style="margin-bottom:6px">Get more phone voices</button>
+    `<button class="btn ghost block" id="nvMore" style="margin-bottom:6px">Get more phone voices</button>` + (!AI ? '' : `
     <div class="sect" style="margin-top:16px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>` + (Pocket.refresh() || !NATIVE ? '' : `<div class="card" style="margin-bottom:12px"><b>One more step</b><div class="small muted" style="margin:4px 0 10px">Download the narrator voice pack (98 MB, once) so these voices can read on your phone.</div><div class="pocketInst"></div></div>`) +
     PRESETS.map(([id, n, d, path]) => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-hear="${path}" title="Hear their real voice">${ICON.play}</button>
       <div class="grow"><b>${n}</b>${id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${d}</div>
         <button class="small" data-read="${id}" style="color:var(--ac2);margin-top:4px">Hear them read</button></div>
       <button class="btn ${id === cur ? 'pri' : ''}" data-use="${id}">${id === cur ? '✓' : 'Use'}</button></div>`).join('') +
-    `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`;
+    `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`);
   $$('#narrList .pocketInst').forEach(el => renderPocketInstall(el));
   $$('#narrList [data-hear]').forEach(b => b.onclick = () => Narr.hear(b, b.dataset.hear));
   $$('#narrList [data-phear]').forEach(b => b.onclick = () => Narr.hearPhone(b, b.dataset.phear));
@@ -2558,21 +2564,22 @@ let verTaps = 0, verLast = 0;
 function renderSettings() {
   $('#setBody').innerHTML = `
     <h2>Voice Tuner Pro</h2>
-    <div class="card row" id="sPro" style="cursor:pointer"><div style="font-size:26px">🎛️</div><div class="grow">${Pro.on ? '<b>Pro unlocked</b> <span class="probadge on">PRO</span><div class="small muted">Thanks! Everything in the Voice Tuner is yours.' + (LS.get('proTest', false) ? ' (test mode)' : '') + '</div>' : `<b>Free version</b><div class="small muted">Unlimited voices, the sound studio, every recipe and sharing for ${Pro.PRICE}, once.</div>`}</div>${Pro.on ? '' : '<button class="btn pri">Unlock</button>'}</div>
+    <div class="card row" id="sPro" style="cursor:pointer"><div style="font-size:26px">🎛️</div><div class="grow">${Pro.on ? '<b>Pro unlocked</b> <span class="probadge on">PRO</span><div class="small muted">Thanks! Everything in the Voice Tuner is yours.' + (LS.get('proTest', false) ? ' (test mode)' : '') + '</div>' : `<b>Free version</b><div class="small muted">Unlimited voices${AI ? ', the sound studio, every recipe' : ''} and sharing for ${Pro.PRICE}, once.</div>`}</div>${Pro.on ? '' : '<button class="btn pri">Unlock</button>'}</div>
     <h2>Narrator</h2>
     <div class="card row" id="sNarr" style="cursor:pointer"><div style="font-size:26px">🗣️</div><div class="grow"><div class="small muted">Default for new books</div><b>${esc(Narr.get(S.narrator).name)}</b> <span class="small muted">· ${esc(Narr.get(S.narrator).desc)}</span></div><button class="btn">Change</button></div>
     <button class="btn ghost block" id="sMoreVoices" style="margin-top:10px">Get more phone voices</button>
-    <h2>AI narrator voice pack</h2>
-    <div class="card"><div class="pocketInst"></div>${NATIVE && Pocket.refresh() ? '<button class="btn ghost" id="sPackDel" style="margin-top:10px">Remove (frees about 195 MB)</button>' : ''}</div>
+    ${AI ? `<h2>AI narrator voice pack</h2>
+    <div class="card"><div class="pocketInst"></div>${NATIVE && Pocket.refresh() ? '<button class="btn ghost" id="sPackDel" style="margin-top:10px">Remove (frees about 195 MB)</button>' : ''}</div>` : ''}
     <h2>Reading</h2>
     <div class="card" style="padding:0 14px">
       <div class="set"><div class="grow">Speed</div><div class="slider" style="width:52%"><input type="range" id="sSpeed" min="0.7" max="1.6" step="0.05" value="${S.speed}"><output>${S.speed}×</output></div></div>
       <div class="set"><div class="grow">Skip front &amp; back matter<div class="small muted">Covers, contents, copyright, index and similar pages are switched off when a book is added</div></div><button class="tog ${S.skipMatter ? 'on' : ''}" data-b="skipMatter"></button></div>
       <div class="set"><div class="grow">Follow along<div class="small muted">Scroll the text to keep up with the voice</div></div><button class="tog ${S.autoScroll ? 'on' : ''}" data-b="autoScroll"></button></div>
       <div class="set"><div class="grow">Text size</div><div class="slider" style="width:52%"><input type="range" id="sSize" min="14" max="28" step="1" value="${S.readSize}"><output>${S.readSize}</output></div></div>
-      <div class="set"><div class="grow">Prepare ahead<div class="small muted">Passages made in advance while you listen or pause</div></div><div class="slider" style="width:42%"><input type="range" id="sPre" min="3" max="20" step="1" value="${S.prefetch}"><output>${S.prefetch}</output></div></div>
+      ${AI ? `      <div class="set"><div class="grow">Prepare ahead<div class="small muted">Passages made in advance while you listen or pause</div></div><div class="slider" style="width:42%"><input type="range" id="sPre" min="3" max="20" step="1" value="${S.prefetch}"><output>${S.prefetch}</output></div></div>
       ${NATIVE?.voiceSpeed ? (() => { const r = NATIVE.voiceSpeed(), x = r > 0 ? 1 / r : 0; return `<div class="set"><div class="grow">Phone speed<div class="small muted">${x >= 1.15 ? `Makes speech ${x.toFixed(1)}× faster than it's read, so listening should be smooth.` : x >= 0.95 ? `Makes speech about as fast as it's read. BookTalk prepares ahead so it keeps up; if you hear pauses, tap the status chip in the player and prepare the chapter first.` : `Makes speech slower than it's read (${x.toFixed(1)}×). BookTalk pauses briefly before passages to avoid stopping mid-sentence. For gap-free listening, prepare the chapter first (status chip in the player), ideally while charging.`}</div></div></div>`; })() : ''}
       <div class="set"><div class="grow">Saved audio<div class="small muted" id="sCache">Passages already made are kept so replaying them is instant</div></div><button class="btn" id="sCacheClear">Clear</button></div>
+` : ''}
     </div>
     <p class="small muted" id="sVer" style="text-align:center;margin-top:28px;user-select:none">BookTalk ${NATIVE?.appVersion ? esc(NATIVE.appVersion()) : ''} · your books and voices stay on this phone</p>`;
   $$('#setBody .pocketInst').forEach(el => renderPocketInstall(el));
@@ -2592,24 +2599,32 @@ function renderSettings() {
   $('#sPackDel')?.addEventListener('click', () => openSheet(`<h4>Remove narrator voices?</h4><p class="muted">Frees about 195 MB. BookTalk can't read aloud until you download them again.</p><div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="pdYes">Remove</button></div>`, sh => {
     $('#pdYes', sh).onclick = () => { P.pause(); NATIVE.packUninstall('pocket'); Pocket.refresh(); closeSheet(); renderSettings(); };
   }));
-  if (NATIVE?.cacheMB) $('#sCache').textContent = `${NATIVE.cacheMB().toFixed(0)} MB of prepared speech kept, so replaying it is instant`;
-  $('#sCacheClear').onclick = () => { NATIVE?.cacheClear?.(); toast('Saved audio cleared'); if (NATIVE?.cacheMB) $('#sCache').textContent = '0 MB of prepared speech kept'; };
+  if (NATIVE?.cacheMB && $('#sCache')) $('#sCache').textContent = `${NATIVE.cacheMB().toFixed(0)} MB of prepared speech kept, so replaying it is instant`;
+  if ($('#sCacheClear')) $('#sCacheClear').onclick = () => { NATIVE?.cacheClear?.(); toast('Saved audio cleared'); if (NATIVE?.cacheMB) $('#sCache').textContent = '0 MB of prepared speech kept'; };
   $$('#setBody [data-b]').forEach(b => b.onclick = () => { const k = b.dataset.b; S[k] = !S[k]; saveSettings(); b.classList.toggle('on', S[k]); });
   $('#sSpeed').oninput = e => { S.speed = +(+e.target.value).toFixed(2); e.target.nextElementSibling.textContent = S.speed + '×'; saveSettings(); };
   $('#sSpeed').onchange = () => { renderPlayerMeta(); P.restartUnit(); };
   $('#sSize').oninput = e => { S.readSize = +e.target.value; e.target.nextElementSibling.textContent = S.readSize; saveSettings(); document.documentElement.style.setProperty('--read', S.readSize + 'px'); };
-  $('#sPre').oninput = e => { S.prefetch = +e.target.value; e.target.nextElementSibling.textContent = S.prefetch; saveSettings(); };
+  if ($('#sPre')) $('#sPre').oninput = e => { S.prefetch = +e.target.value; e.target.nextElementSibling.textContent = S.prefetch; saveSettings(); };
 }
 
 /* ---------------- Start ---------------- */
 (async function start() {
+  if (!AI && NATIVE && !LS.get('aiRemoved', false)) {
+    try {
+      if (NATIVE.packInstalled?.('pocket')) NATIVE.packUninstall('pocket');
+      PRESETS.forEach(([id]) => { if (NATIVE.voiceHas?.('pk_' + id)) NATIVE.voiceDelete?.('pk_' + id); });
+      NATIVE.cacheClear?.();
+    } catch {}
+    LS.set('aiRemoved', true);
+  }
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
   try { if (navigator.storage?.persist) navigator.storage.persist(); } catch {}
   Pocket.refresh();
   // Older versions could download Kokoro voices; they're no longer used, so free the space
   try { if (NATIVE?.kokoroInstalled && NATIVE.kokoroInstalled()) NATIVE.kokoroUninstall(); } catch {}
   await renderLibrary();
-  if (NATIVE && !Pocket.ready && !Phone.is(S.narrator) && !LS.get('packAsked', false)) { LS.set('packAsked', true); voicePackSheet(); }
+  if (AI && NATIVE && !Pocket.ready && !Phone.is(S.narrator) && !LS.get('packAsked', false)) { LS.set('packAsked', true); voicePackSheet(); }
   const last = LS.get('lastBook', null);
   if (last) {
     const m = await DB.get('meta', last).catch(() => null);
