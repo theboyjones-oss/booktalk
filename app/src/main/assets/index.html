@@ -480,8 +480,10 @@ function cleanText(s) {
     .trim();
 }
 // Returns cleaned paragraph, SCENE for scene breaks, or '' to drop.
+// A line break straight into a lower-case word is a wrapped line, not a real break: "no\nrestrictions" → "no restrictions"
+const unwrap = t => t.replace(/([^\n])\n(?=[\p{Ll}(‘'“"]?\p{Ll})/gu, '$1 ').replace(/-\n(?=\p{Ll})/gu, '-');
 function normPara(s) {
-  const t = cleanText(s);
+  const t = unwrap(cleanText(s));
   if (!t) return '';
   if (/^[\s*•·~#=_\-–—⁂◆◇●○♦❖✦✧❧☙\.]+$/.test(t)) return /[*•·~#=⁂◆◇●○♦❖✦✧❧☙]/.test(t) || t.replace(/\s/g,'').length >= 3 ? SCENE : '';
   if (!/\p{L}/u.test(t)) return ''; // page numbers, stray symbols
@@ -514,7 +516,7 @@ const attr = (el, n) => el.getAttribute ? (el.getAttribute(n) || '') : '';
 const DROP_TAGS = new Set(['script','style','head','title','nav','img','svg','image','figure','figcaption','table','audio','video','iframe','object','embed','noscript','math','canvas','map','button','form','input','select','sup','sub','rt','rp','pagebreak']);
 const BLOCK_TAGS = new Set(['p','div','section','article','blockquote','li','ul','ol','dl','dt','dd','pre','h1','h2','h3','h4','h5','h6','header','footer','aside','main','body','hr','center','poem','stanza','address','details','summary']);
 const JUNK_SEM = /\b(footnotes?|endnotes?|rearnotes?|noteref|pagebreak|doc-pagebreak|doc-noteref|doc-footnote|doc-endnote|doc-backlink|doc-pagelist|page-list|doc-toc|toc|landmarks|doc-index|index)\b/i;
-const JUNK_CLASS = /\b(page-?num(ber)?s?|pagenum|page-?break|pagebreak|footnotes?|endnotes?|noteref|fn-?ref|note-?ref|calibre_pb|pg-?num|running-?head)\b/i;
+const JUNK_CLASS = /\b(pg-boilerplate|pg-header|pg-footer|pg-machine-header|pg-start-separator|pg-end-separator|pgheader|pgfooter|page-?num(ber)?s?|pagenum|page-?break|pagebreak|footnotes?|endnotes?|noteref|fn-?ref|note-?ref|calibre_pb|pg-?num|running-?head)\b/i;
 
 function isJunk(el) {
   const tag = lname(el);
@@ -536,10 +538,11 @@ function isJunk(el) {
   }
   return false;
 }
+const softWs = (t, node) => /^(pre|code)$/.test(lname(node)) ? t : t.replace(/[ \t\r\n\f]+/g, ' ');
 function inlineText(node) {
   let s = '';
   for (const c of node.childNodes) {
-    if (c.nodeType === 3) s += c.nodeValue;
+    if (c.nodeType === 3) s += softWs(c.nodeValue, node);
     else if (c.nodeType === 1) {
       if (isJunk(c)) continue;
       const t = lname(c);
@@ -561,7 +564,7 @@ function extractItems(root, items = []) {
   let buf = '';
   const flush = () => { if (buf.trim()) items.push({ t: buf, h: 0 }); buf = ''; };
   for (const c of root.childNodes) {
-    if (c.nodeType === 3) { buf += c.nodeValue; continue; }
+    if (c.nodeType === 3) { buf += softWs(c.nodeValue, root); continue; }
     if (c.nodeType !== 1 || isJunk(c)) continue;
     const tag = lname(c);
     if (tag === 'br') { buf += '\n'; continue; }
@@ -980,6 +983,32 @@ function parseMobi(buf) {
   return { title, author, chapters: splitChapters(items, title) };
 }
 
+// Project Gutenberg books: keep only the text between "*** START OF THE PROJECT GUTENBERG EBOOK … ***" and "*** END OF …"
+function trimGutenberg(chapters) {
+  const START = /^\W*\*{3}\s*START OF (THE|THIS) PROJECT GUTENBERG/i, END = /^\W*\*{3}\s*END OF (THE|THIS) PROJECT GUTENBERG/i;
+  const txt = p => p.replace(HEAD, '');
+  let si = -1, sp = -1;
+  chapters.forEach((c, i) => { if (si < 0) { const k = c.paras.findIndex(p => START.test(txt(p))); if (k >= 0) { si = i; sp = k; } } });
+  if (si >= 0) { chapters = chapters.slice(si); chapters[0] = { ...chapters[0], paras: chapters[0].paras.slice(sp + 1) }; }
+  for (let i = 0; i < chapters.length; i++) {
+    const k = chapters[i].paras.findIndex(p => END.test(txt(p)));
+    if (k >= 0) { chapters = chapters.slice(0, i + 1); chapters[i] = { ...chapters[i], paras: chapters[i].paras.slice(0, k) }; break; }
+  }
+  chapters = chapters.filter(c => c.paras.some(p => p !== SCENE));
+  // the first chapter's title may have come from the removed header
+  if (si >= 0 && chapters[0] && /project gutenberg/i.test(chapters[0].title)) {
+    const h = chapters[0].paras.find(p => p[0] === HEAD), f = chapters[0].paras.find(p => p !== SCENE) || '';
+    chapters[0].title = h ? h.slice(1) : f.replace(HEAD, '').slice(0, 50) + (f.length > 50 ? '…' : '');
+  }
+  return chapters;
+}
+// Books added before v4.0 may have wrapped lines inside paragraphs: mend them once
+async function fixWrapped(content) {
+  if (!content || content.unwrapped) return;
+  content.chapters.forEach(c => { c.paras = c.paras.map(p => p === SCENE ? p : p[0] === HEAD ? p : unwrap(p)); });
+  content.unwrapped = true;
+  try { await DB.put('content', content); } catch {}
+}
 async function parseBook(file, onStage) {
   const buf = await file.arrayBuffer();
   const u8 = new Uint8Array(buf.slice(0, 68));
@@ -1008,7 +1037,7 @@ async function parseBook(file, onStage) {
   if (/^(unknown|anonymous|administrator|user|owner)$/i.test((book.author || '').trim())) book.author = '';
   book.title = cleanText(book.title || '').replace(/\n/g, ' ') || file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
   book.author = cleanText(book.author || '').replace(/\n/g, ' ');
-  book.chapters = (book.chapters || []).filter(c => c.paras && c.paras.length);
+  book.chapters = trimGutenberg((book.chapters || []).filter(c => c.paras && c.paras.length));
   if (!book.chapters.length) throw new Error('No readable text found in this book.');
   book.format = (head.startsWith('%PDF') ? 'pdf' : ext || 'text').toUpperCase();
   return book;
@@ -1541,6 +1570,7 @@ const P = {
     this.pause();
     const [meta, content] = await Promise.all([DB.get('meta', id), DB.get('content', id)]);
     if (!meta || !content) { toast('Book not found'); return; }
+    await fixWrapped(content);
     this.meta = meta; this.content = content; this.unitsCache.clear();
     const inc = this.included();
     if (!inc.length) { toast('All chapters are switched off for this book'); return; }
@@ -2082,7 +2112,7 @@ const Maker = {
   statusText() { const j = this.job; if (!j) return ''; return j.state === 'paused' ? 'paused · ' + j.pct + '%' : j.state === 'done' ? 'done' : `${j.pct}% · chapter ${j.chNow}/${j.chTotal}`; },
   async sheet(meta) {
     meta = (await DB.get('meta', meta.id)) || meta;   // always use the latest narrator/mood
-    const content = await DB.get('content', meta.id);
+    const content = await DB.get('content', meta.id); await fixWrapped(content);
     if (this.job && this.job.id === meta.id && this.job.state === 'running') {
       openSheet(`<h4>Saving as audiobook</h4><div class="small muted" id="mkSt">${esc(this.job.msg || '')}</div><div class="prog" style="margin:12px 0"><i id="mkBar" style="width:${this.job.pct}%"></i></div>
         <p class="small muted">Chapters are saved to <b>Music/BookTalk/${esc(AudioName(meta.title))}</b> as they finish. You can leave this screen; keep BookTalk open in the background.</p>
