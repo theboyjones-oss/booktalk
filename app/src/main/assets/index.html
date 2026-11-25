@@ -261,6 +261,10 @@ a{color:var(--ac2)}
 .ginfo{min-width:0} .ginfo b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
 .gsubj{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px} .gsubj span{font-size:11px;background:var(--s2);border-radius:999px;padding:3px 8px;color:var(--tx2)}
 nav.tabs button{font-size:11px}
+
+.emorow{display:grid;grid-template-columns:auto 1fr 4.6em;align-items:center;gap:10px;margin:8px 2px 2px;font-size:13px;font-weight:600;color:var(--tx2)}
+.emorow input{padding:0;border:0;background:none;accent-color:var(--ac);width:100%}
+.emorow output{font-size:12px;color:var(--ac2);text-align:right}
 </style>
 </head>
 <body>
@@ -339,6 +343,7 @@ nav.tabs button{font-size:11px}
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
     <div id="moodRow"></div>
+    <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
       <button class="chip" id="chSpeed"></button>
@@ -1305,7 +1310,7 @@ function resolveTune(t) {
   return { pitch: clamp(p, 0.5, 2), pace: clamp(s, 0.4, 2.5), temp: clamp(tp, 0.1, 1.5), gap: clamp(g, 0.1, 4), style: best, spause: t.spause ?? 1, fx };
 }
 // Everything that shapes how a narrator sounds: their own tuning (if any) plus the book's mood
-function toneFor(nar, moodId) {
+function toneRaw(nar, moodId) {
   const md = moodOf(moodId);
   if (!nar?.tune) return { mood: md.id, temp: md.temp, pitch: md.pitch, phonePitch: clamp(1 + (md.pitch - 1) * 1.5, 0.5, 2), pace: md.pace, gap: md.gap, style: md.style, spause: 1, fx: null, tag: '' };
   const r = resolveTune(nar.tune);
@@ -1316,6 +1321,46 @@ function toneFor(nar, moodId) {
     pace: clamp(r.pace * md.pace, 0.4, 2.5), gap: clamp(r.gap * md.gap, 0.1, 4),
     tag: 'v' + (style || 'n') + r.spause,
   };
+}
+// emo: emotion strength in % (0 = flat, 100 = as designed, 200 = theatrical)
+function toneFor(nar, moodId, emo = 100) {
+  const full = toneRaw(nar, moodId), k = clamp((emo ?? 100) / 100, 0, 2);
+  if (Math.abs(k - 1) < 0.01) return { ...full, k: 1 };
+  const base = toneRaw(nar?.tune ? { ...nar, tune: { ...nar.tune, emo: {} } } : null, 'normal');
+  const mix = (a, b, lo, hi) => clamp(b * Math.pow(a / b, k), lo, hi);
+  return {
+    ...full, k,
+    pitch: mix(full.pitch, base.pitch, 0.5, 2), phonePitch: mix(full.phonePitch, base.phonePitch, 0.5, 2),
+    pace: mix(full.pace, base.pace, 0.4, 2.5), gap: mix(full.gap, base.gap, 0.1, 5),
+    temp: clamp(Math.round((base.temp + (full.temp - base.temp) * k) * 20) / 20, 0.1, 1.5),
+    style: k < 0.4 ? '' : full.style,
+    tag: full.tag + (k < 0.4 ? 'f' : ''),
+  };
+}
+// Expressive delivery: each sentence gets its own lift. Dialogue sounds brighter, exclamations rise,
+// questions lift, and sentences that trail off slow down. Strength follows the emotion slider.
+function sentenceTone(text, inQuote, k = 1) {
+  const t = text.trim(), end = t.replace(/["'”’)\]\s]+$/, '').slice(-3);
+  let p = 1, r = 1;
+  if (inQuote) { p *= 1 + 0.05 * k; r *= 1 + 0.03 * k; }
+  const qEnd = (t.match(/([!?])["'”’]/) || [])[1];      // ‘Is anyone there?’ she called.
+  if (/!$/.test(end) || qEnd === '!') { p *= 1 + 0.07 * k; r *= 1 + 0.06 * k; }
+  else if (/\?$/.test(end) || qEnd === '?') { p *= 1 + 0.05 * k; }
+  else if (/(\.\.\.|…)$/.test(end) || /[—–-]$/.test(end)) { p *= 1 - 0.03 * k; r *= 1 - 0.08 * k; }
+  return { p, r };
+}
+// which sentences are mostly dialogue (inside quotation marks)
+function quoteFlags(text, spans) {
+  const inq = new Array(text.length).fill(false); let q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], a = text[i - 1] || ' ', b = text[i + 1] || ' ';
+    if (c === '“' || (c === '‘' && !/\p{L}/u.test(a))) { q = true; continue; }
+    if (c === '”' || (c === '’' && q && !/\p{L}/u.test(b))) { inq[i] = q; q = false; continue; }
+    if (c === '"') { q = !q; continue; }
+    if (c === '\n' && !/[“‘"]/.test(b)) q = false;
+    inq[i] = q;
+  }
+  return spans.map(([a, b]) => { let n = 0, m = 0; for (let i = a; i < b; i++) if (/\S/.test(text[i])) { m++; if (inq[i]) n++; } return m > 0 && n / m > 0.5; });
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
 function setFx(tone) { if (NATIVE?.setFx) NATIVE.setFx(fxJson(tone)); }
@@ -1557,9 +1602,13 @@ const P = {
   unitsFor(ch) { if (!this.unitsCache.has(ch)) this.unitsCache.set(ch, buildUnits(this.content.chapters[ch].paras, MAX_UNIT)); return this.unitsCache.get(ch); },
   narrator() { return Narr.forBook(this.meta); },
   mood() { return moodOf(this.meta?.mood); },
-  tone() { return toneFor(this.narrator(), this.meta?.mood); },
+  tone() { return toneFor(this.narrator(), this.meta?.mood, this.meta?.emo ?? 100); },
   key(text) { return toneKey(text, this.narrator(), this.tone()); },
   isPhone() { return !!this.narrator().phone; },
+  async changeEmo(v) {
+    this.meta.emo = v; await DB.put('meta', this.meta);
+    renderPlayerMeta(); if (this.playing) this.restartUnit();
+  },
   async changeMood(id) {
     this.meta.mood = id; await DB.put('meta', this.meta);
     NATIVE?.kokoroCancel?.(); renderPlayerMeta(); this.restartUnit();
@@ -1645,10 +1694,10 @@ const P = {
       const un = this.units[i], base = 'q' + tok + '_' + i;
       if (un.scene) { this.qSents[i] = [[0, 0]]; Out.phoneSay(base + '_0', '', 1, 1, n.tts, Math.round(1000 * md.gap), first, md, fx); first = false; continue; }
       // one utterance per sentence: the voice tells us exactly when each starts, so the highlight is exact
-      const spans = this.qSents[i] = sentenceSpans(un.text);
+      const spans = this.qSents[i] = sentenceSpans(un.text), quoted = quoteFlags(un.text, spans);
       spans.forEach(([a, b], k) => {
-        const last = k === spans.length - 1;
-        Out.phoneSay(base + '_' + k, un.text.slice(a, b).trim(), pitch, rate, n.tts, last ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
+        const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k);
+        Out.phoneSay(base + '_' + k, un.text.slice(a, b).trim(), clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, last ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
         first = false;
       });
     }
@@ -2073,13 +2122,13 @@ function importVoiceSheet() {
 const Preview = {
   id: null, btn: null, icon: null,
   // Hear a narrator actually reading (made on the phone)
-  async run(narId, btn, moodId, icon) { return this.play(Narr.get(narId), moodId, btn, icon); },
+  async run(narId, btn, moodId, icon, emo) { return this.play(Narr.get(narId), moodId, btn, icon, SAMPLE, null, emo); },
   // n: a narrator (or a Voice Tuner draft) · text: what to say · onEnd: called when it finishes or stops
-  async play(n, moodId, btn, icon, text = SAMPLE, onEnd) {
+  async play(n, moodId, btn, icon, text = SAMPLE, onEnd, emo = 100) {
     this.onEnd = null;
     if (!icon) { Out.stop(); if (P.playing) P.pause(); Narr.stopSample(); }
     this.done();
-    const md = toneFor(n, moodId);
+    const md = toneFor(n, moodId, emo);
     this.onEnd = onEnd || null;
     const id = this.id = 'pv' + uid();
     this.btn = btn; this.icon = icon || null;
@@ -2108,7 +2157,7 @@ const Maker = {
     return meta.include.map((on, i) => on ? i : -1).filter(i => i >= 0)
       .map((ch, n) => ({ ch, n, title: content.chapters[ch].title, units: buildUnits(content.chapters[ch].paras, MAX_UNIT) }));
   },
-  keyFor(meta, text) { const n = Narr.forBook(meta); return toneKey(text, n, toneFor(n, meta.mood)); },
+  keyFor(meta, text) { const n = Narr.forBook(meta); return toneKey(text, n, toneFor(n, meta.mood, meta.emo)); },
   statusText() { const j = this.job; if (!j) return ''; return j.state === 'paused' ? 'paused · ' + j.pct + '%' : j.state === 'done' ? 'done' : `${j.pct}% · chapter ${j.chNow}/${j.chTotal}`; },
   async sheet(meta) {
     meta = (await DB.get('meta', meta.id)) || meta;   // always use the latest narrator/mood
@@ -2156,7 +2205,7 @@ const Maker = {
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
   },
-  gen(meta, text, key) { const n = Narr.forBook(meta), t = toneFor(n, meta.mood); return this.call('clonePrepare', key, sayText(text, t), n.voice, t.temp); },
+  gen(meta, text, key) { const n = Narr.forBook(meta), t = toneFor(n, meta.mood, meta.emo); return this.call('clonePrepare', key, sayText(text, t), n.voice, t.temp); },
   update() {
     const j = this.job; if (!j) return;
     j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
@@ -2177,13 +2226,20 @@ const Maker = {
     let where = '';
     try {
       if (Narr.forBook(meta).phone) {
-        const n = Narr.forBook(meta), tn = toneFor(n, meta.mood), fx = Pro.on ? fxJson(tn) : '';
+        const n = Narr.forBook(meta), tn = toneFor(n, meta.mood, meta.emo), fx = Pro.on ? fxJson(tn) : '';
         for (const c of plan) {
           j.chNow = c.n + 1;
           const count = c.units.filter(u => !u.scene).length;
           if (exported.has(c.ch)) { j.done += count; this.update(); continue; }
           if (j.cancel) return;
-          const items = c.units.map(u => u.scene ? { gap: 1200 } : { t: sayText(u.text, tn), p: tn.phonePitch, r: tn.pace, v: n.tts, gap: Math.round((u.head ? 800 : 300) * tn.gap) });
+          const items = c.units.flatMap(u => {
+            if (u.scene) return [{ gap: 1200 }];
+            const spans = sentenceSpans(u.text), q = quoteFlags(u.text, spans);
+            return spans.map(([a, b2], i) => {
+              const st = sentenceTone(u.text.slice(a, b2), q[i], tn.k), last = i === spans.length - 1;
+              return { t: sayText(u.text.slice(a, b2).trim(), tn), p: clamp(tn.phonePitch * st.p, 0.5, 2), r: clamp(tn.pace * st.r, 0.4, 2.5), v: n.tts, gap: last ? Math.round((u.head ? 800 : 300) * tn.gap) : 0 };
+            });
+          });
           j.msg = `Chapter ${c.n + 1} of ${plan.length}: ${c.title}`; j.base = j.done; j.chCount = count; this.update();
           const fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
           const ev = await this.call('exportPhone', meta.title, fname, JSON.stringify(items), fx);
@@ -2218,7 +2274,7 @@ const Maker = {
         }
         if (exported.has(c.ch)) continue;
         j.msg = `Saving chapter ${c.n + 1} of ${plan.length}…`; this.update();
-        const tn = toneFor(Narr.forBook(meta), meta.mood), fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
+        const tn = toneFor(Narr.forBook(meta), meta.mood, meta.emo), fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
         const ev = NATIVE.exportChapterFx ? await this.call('exportChapterFx', meta.title, fname, JSON.stringify(items), tn.pitch, Pro.on ? fxJson(tn) : '') : await this.call('exportChapter', meta.title, fname, JSON.stringify(items), tn.pitch);
         where = ev.where; exported.add(c.ch);
         LS.set('make.' + meta.id, { eng, exported: [...exported] });
@@ -2648,6 +2704,7 @@ async function openBook(id) {
     </div>
     <label class="f">Mood <span style="font-weight:400">· how ${esc(Narr.forBook(m).name)} sounds</span></label>
     <div class="moodrow" id="bkMood">${moodButtons(moodOf(m.mood).id)}</div>
+    <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
       <div class="ch ${m.include[i] ? '' : 'off'}" data-i="${i}"><div class="grow"><div class="n">${esc(c.title)}</div>${c.why ? `<div class="why">${esc(c.why)}</div>` : ''}</div><button class="tog ${m.include[i] ? 'on' : ''}"></button></div>`).join('')}</div>
@@ -2655,11 +2712,17 @@ async function openBook(id) {
   $('#bkPlay').onclick = () => P.open(id, true);
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
   $('#bkPrep')?.addEventListener('click', async () => { if (!P.meta || P.meta.id !== id) await P.open(id, false); showPlayer(false); Prep.sheet(); });
+  $('#bkEmo').oninput = e => { $('#bkEmoO').textContent = emoLabel(+e.target.value); };
+  $('#bkEmo').onchange = async e => {
+    m.emo = +e.target.value; await DB.put('meta', m);
+    if (P.meta?.id === id) await P.changeEmo(m.emo);
+    Preview.run(Narr.forBook(m).id, null, m.mood, null, m.emo);
+  };
   $$('#bkMood [data-mood]').forEach(b => b.onclick = async () => {
     m.mood = b.dataset.mood; await DB.put('meta', m);
     $$('#bkMood [data-mood]').forEach(x => x.classList.toggle('on', x === b));
     if (P.meta?.id === id) await P.changeMood(m.mood);
-    Preview.run(Narr.forBook(m).id, null, m.mood);
+    Preview.run(Narr.forBook(m).id, null, m.mood, null, m.emo ?? 100);
   });
   $('#bkNarr').onclick = () => Narr.picker({ title: 'Narrator for this book', current: Narr.forBook(m).id, onPick: async nid => {
     m.narrator = nid; await DB.put('meta', m);
@@ -2752,6 +2815,9 @@ function renderReader() {
   renderPlayerMeta();
 }
 $('#reader').addEventListener('click', e => { const p = e.target.closest('p[data-i]'); if (p) P.jumpPara(+p.dataset.i); });
+const emoLabel = v => v == 0 ? 'Flat' : v < 60 ? 'Subtle' : v < 100 ? 'Gentle' : v == 100 ? 'Normal' : v < 150 ? 'Lively' : v < 200 ? 'Dramatic' : 'Theatrical';
+$('#emoR').oninput = e => { $('#emoO').textContent = emoLabel(+e.target.value); };
+$('#emoR').onchange = e => P.changeEmo(+e.target.value);
 function renderPlayerMeta() {
   if (!P.meta) return;
   $('#plTitle').textContent = P.meta.title;
@@ -2759,6 +2825,7 @@ function renderPlayerMeta() {
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
   $('#moodRow').innerHTML = moodButtons(P.mood().id);
+  { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
   $$('#moodRow [data-mood]').forEach(b => b.onclick = () => P.changeMood(b.dataset.mood));
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
