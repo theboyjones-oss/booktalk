@@ -429,6 +429,16 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         @JavascriptInterface
         public void setFx(String json) { speaker.setFx(json); }
 
+        /** Full-screen reading: hide Android's status and navigation bars (swipe from an edge to peek). */
+        @JavascriptInterface
+        public void setFullscreen(boolean on) {
+            runOnUiThread(() -> {
+                WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                if (on) c.hide(WindowInsetsCompat.Type.systemBars()); else c.show(WindowInsetsCompat.Type.systemBars());
+            });
+        }
+
         /** Keep the screen awake while a book is being read aloud. */
         @JavascriptInterface
         public void keepScreenOn(boolean on) {

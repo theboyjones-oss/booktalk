@@ -223,7 +223,8 @@ a{color:var(--ac2)}
 #pctlHide svg{width:22px;height:22px;fill:var(--tx2)}
 #pctlShow{display:none;position:absolute;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);width:52px;height:52px;border-radius:50%;background:rgba(40,40,46,.88);border:1px solid var(--line);box-shadow:0 4px 18px rgba(0,0,0,.5);place-items:center;z-index:5}
 #pctlShow svg{width:30px;height:30px;fill:var(--ac2)}
-#player.min #pctl{display:none}
+#player.min #pctl,#player.min .ph{display:none}
+#player.min #reader{padding-top:18px}
 #player.min #pctlShow{display:grid}
 </style>
 </head>
@@ -2230,6 +2231,7 @@ function setTab(tab) {
 function showPlayer(on) {
   if (!on && $('#player').classList.contains('on') && bookPageId) setTimeout(() => openBook(bookPageId), 0);   // reflect narrator/mood changes
   $('#player').classList.toggle('on', on);
+  fullscreen();
   if (on) { renderPlayerMeta(); requestAnimationFrame(() => P.highlight(true)); }
   updateMini();
 }
@@ -2446,8 +2448,9 @@ function renderPlayerMeta() {
   if (!P.playing) setStatus('');
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
 }
+function fullscreen() { try { NATIVE?.setFullscreen?.($('#player').classList.contains('on') && $('#player').classList.contains('min')); } catch {} }
 function setControlsHidden(on) {
-  $('#player').classList.toggle('min', on); LS.set('ctlMin', on);
+  $('#player').classList.toggle('min', on); LS.set('ctlMin', on); fullscreen();
   if (P.meta) requestAnimationFrame(() => P.highlight(true));
 }
 $('#pctlHide').onclick = () => setControlsHidden(true);
