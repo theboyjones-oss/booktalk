@@ -14,7 +14,24 @@
   --r:16px; --serif:Georgia,"Noto Serif","Times New Roman",serif;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --read:19px;
+  --rtx:#8d8a85; --rhead:#bdb9b2; --rdone:#57544f; --toastbg:#2a2a31; --toasttx:#f1eee8;
+  --faint:rgba(255,255,255,.1); --glow:rgba(255,255,255,.06); --float:rgba(40,40,46,.88); --hl:rgba(255,138,92,.2);
+  color-scheme:dark;
 }
+/* light theme */
+html[data-theme=light]{
+  --bg:#faf8f4; --s1:#ffffff; --s2:#f1eee8; --s3:#e6e2da; --line:#ddd8ce;
+  --tx:#1d1b18; --tx2:#5f5a53; --tx3:#8e897f;
+  --ac:#e8693a; --ac2:#c2501f; --acbg:rgba(232,105,58,.12);
+  --ok:#1d9a60; --warn:#a87400; --bad:#d64545;
+  --rtx:#7b766e; --rhead:#3d3a35; --rdone:#b0aaa0; --toastbg:#2b2926; --toasttx:#fbf9f5;
+  --faint:rgba(0,0,0,.1); --glow:rgba(0,0,0,.04); --float:rgba(255,255,255,.92); --hl:rgba(232,105,58,.22);
+  color-scheme:light;
+}
+html[data-theme=light] .cover{box-shadow:0 6px 18px rgba(60,40,20,.18)}
+html[data-theme=light] #scrim{background:rgba(30,25,20,.35)}
+html[data-theme=light] nav.tabs{background:rgba(255,253,249,.97)}
+html[data-theme=light] #busy{background:rgba(250,248,244,.94)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:15px;overscroll-behavior:none}
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
@@ -93,14 +110,14 @@ nav.tabs button.on{color:var(--ac)}
 #player .ph{display:flex;align-items:center;gap:8px;padding:12px 10px 8px}
 #player .ph .tt{flex:1;min-width:0;text-align:center}
 #player .ph .tt div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#reader{flex:1;overflow-y:auto;padding:10px 22px 40vh;font-family:var(--serif);font-size:var(--read);line-height:1.62;color:#8d8a85}
+#reader{flex:1;overflow-y:auto;padding:10px 22px 40vh;font-family:var(--serif);font-size:var(--read);line-height:1.62;color:var(--rtx)}
 #reader p{margin:0 0 .85em;transition:color .25s;border-radius:6px}
-#reader p.h{font-weight:700;color:#bdb9b2;font-size:1.15em;margin:1.2em 0 .8em}
+#reader p.h{font-weight:700;color:var(--rhead);font-size:1.15em;margin:1.2em 0 .8em}
 #reader p.sc{text-align:center;letter-spacing:.6em;color:var(--tx3)}
 #reader{position:relative}
 #reader p.cur{color:var(--tx)}
 #reader p.done .w{color:inherit}
-#reader p.done{color:#57544f}
+#reader p.done{color:var(--rdone)}
 #moodRow,.moodrow{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:0 0 10px}
 #moodRow::-webkit-scrollbar,.moodrow::-webkit-scrollbar{display:none}
 .mb{flex:none;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:58px;padding:7px 6px;border-radius:12px;background:var(--s2);border:1px solid var(--line);font-size:11px;font-weight:600;color:var(--tx2)}
@@ -156,7 +173,7 @@ label.f{display:block;font-size:12px;color:var(--tx2);margin:14px 2px 6px;font-w
 #busy{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:30px}
 .spin{width:42px;height:42px;border:4px solid var(--s3);border-top-color:var(--ac);border-radius:50%;animation:sp 0.9s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
-#toast{position:fixed;left:50%;bottom:150px;transform:translateX(-50%) translateY(20px);background:#2a2a31;color:var(--tx);padding:11px 16px;border-radius:12px;z-index:120;opacity:0;transition:.25s;max-width:88vw;font-size:14px;text-align:center;pointer-events:none}
+#toast{position:fixed;left:50%;bottom:150px;transform:translateX(-50%) translateY(20px);background:var(--toastbg);color:var(--toasttx);padding:11px 16px;border-radius:12px;z-index:120;opacity:0;transition:.25s;max-width:88vw;font-size:14px;text-align:center;pointer-events:none}
 #toast.on{opacity:1;transform:translateX(-50%)}
 #sheet.on ~ #toast{top:calc(env(safe-area-inset-top) + 24px);bottom:auto}
 a{color:var(--ac2)}
@@ -185,10 +202,10 @@ a{color:var(--ac2)}
 .trec span{font-size:17px}
 .trec.on{background:var(--acbg);border-color:var(--ac);color:var(--ac2)}
 .tpad{position:relative;width:100%;aspect-ratio:1.35;border-radius:14px;touch-action:none;overflow:hidden;
-  background:radial-gradient(circle at 50% 50%,rgba(255,255,255,.06),transparent 60%),
+  background:radial-gradient(circle at 50% 50%,var(--glow),transparent 60%),
   linear-gradient(135deg,rgba(255,200,80,.20),transparent 50%,rgba(70,120,255,.18)),
   linear-gradient(45deg,rgba(120,200,255,.18),transparent 50%,rgba(255,110,90,.22)),var(--s2)}
-.tpx,.tpy{position:absolute;background:rgba(255,255,255,.1)} .tpx{left:0;right:0;top:50%;height:1px} .tpy{top:0;bottom:0;left:50%;width:1px}
+.tpx,.tpy{position:absolute;background:var(--faint)} .tpx{left:0;right:0;top:50%;height:1px} .tpy{top:0;bottom:0;left:50%;width:1px}
 .tpl{position:absolute;font-size:12px;font-weight:600;color:var(--tx2);pointer-events:none}
 .tpl.t{top:8px;left:50%;transform:translateX(-50%)} .tpl.b{bottom:8px;left:50%;transform:translateX(-50%)} .tpl.l{left:10px;top:50%;transform:translateY(-50%)} .tpl.r{right:10px;top:50%;transform:translateY(-50%)}
 .tdot{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;background:var(--ac);box-shadow:0 0 0 6px rgba(255,138,92,.25),0 0 24px rgba(255,138,92,.6);pointer-events:none;transition:left .08s,top .08s}
@@ -221,14 +238,14 @@ a{color:var(--ac2)}
 /* hide the player controls to read along with the whole page */
 #pctlHide{position:absolute;top:-15px;left:50%;transform:translateX(-50%);width:54px;height:26px;border-radius:13px;background:var(--s2);border:1px solid var(--line);display:grid;place-items:center;z-index:2}
 #pctlHide svg{width:22px;height:22px;fill:var(--tx2)}
-#pctlShow{display:none;position:absolute;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);width:52px;height:52px;border-radius:50%;background:rgba(40,40,46,.88);border:1px solid var(--line);box-shadow:0 4px 18px rgba(0,0,0,.5);place-items:center;z-index:5}
+#pctlShow{display:none;position:absolute;left:50%;bottom:calc(18px + env(safe-area-inset-bottom));transform:translateX(-50%);width:52px;height:52px;border-radius:50%;background:var(--float);border:1px solid var(--line);box-shadow:0 4px 18px rgba(0,0,0,.3);place-items:center;z-index:5}
 #pctlShow svg{width:30px;height:30px;fill:var(--ac2)}
 #player.min #pctl,#player.min .ph{display:none}
 #player.min #reader{padding-top:18px}
 #player.min #pctlShow{display:grid}
 
 /* the sentence being spoken right now */
-#reader span.w.cs{color:var(--tx);background:rgba(255,138,92,.2);box-shadow:-.16em 0 0 rgba(255,138,92,.2),.16em 0 0 rgba(255,138,92,.2);border-radius:2px;transition:background .15s}
+#reader span.w.cs{color:var(--tx);background:var(--hl);box-shadow:-.16em 0 0 var(--hl),.16em 0 0 var(--hl);border-radius:2px;transition:background .15s}
 </style>
 </head>
 <body>
@@ -378,6 +395,19 @@ const DB = {
   del(s, id) { return this.run(s, 'readwrite', o => o.delete(id)); },
   all(s) { return this.run(s, 'readonly', o => o.getAll()); },
 };
+/* ---------------- Theme: dark / light / match the phone ---------------- */
+function applyTheme() {
+  const pref = (() => { try { return JSON.parse(localStorage.getItem('bt.theme')) || 'auto'; } catch { return 'auto'; } })();
+  const nat = window.BookTalkNative;
+  const sysDark = nat?.systemDark ? nat.systemDark() : !matchMedia('(prefers-color-scheme: light)').matches;
+  const light = pref === 'light' || (pref === 'auto' && !sysDark);
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', light ? '#faf8f4' : '#000000');
+  try { nat?.setThemeLight?.(light); } catch {}
+}
+applyTheme();
+matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', applyTheme);
+
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('bt.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('bt.' + k, JSON.stringify(v)); } catch {} },
@@ -1699,6 +1729,7 @@ function onNative(ev) {
     case 'kokinst': if (ev.pack === 'pocket') Pocket.onInstall(ev); break;
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'expprog': Maker.onProg(ev); break;
+    case 'uimode': applyTheme(); break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
@@ -2660,6 +2691,8 @@ function renderSettings() {
     <button class="btn ghost block" id="sMoreVoices" style="margin-top:10px">Get more phone voices</button>
     ${AI ? `<h2>AI narrator voice pack</h2>
     <div class="card"><div class="pocketInst"></div>${NATIVE && Pocket.refresh() ? '<button class="btn ghost" id="sPackDel" style="margin-top:10px">Remove (frees about 195 MB)</button>' : ''}</div>` : ''}
+    <h2>Appearance</h2>
+    <div class="tseg" id="sTheme" style="margin-bottom:4px;grid-template-columns:repeat(3,1fr)">${[['auto', '📱 Match phone'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([k, l]) => `<button data-th="${k}" class="${LS.get('theme', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <h2>Reading</h2>
     <div class="card" style="padding:0 14px">
       <div class="set"><div class="grow">Speed</div><div class="slider" style="width:52%"><input type="range" id="sSpeed" min="0.7" max="1.6" step="0.05" value="${S.speed}"><output>${S.speed}×</output></div></div>
@@ -2677,6 +2710,7 @@ function renderSettings() {
   $$('#setBody .pocketInst').forEach(el => renderPocketInstall(el));
   $('#sMoreVoices').onclick = () => Phone.moreVoices();
   $('#sHl').onclick = e => { S.hlSentence = S.hlSentence === false; saveSettings(); e.currentTarget.classList.toggle('on', S.hlSentence); if (!S.hlSentence) $$('#reader span.cs').forEach(w => w.classList.remove('cs')); };
+  $$('#sTheme [data-th]').forEach(b => b.onclick = () => { LS.set('theme', b.dataset.th); applyTheme(); $$('#sTheme [data-th]').forEach(x => x.classList.toggle('on', x === b)); });
   $('#sKeepOn').onclick = e => { S.keepOn = S.keepOn === false; saveSettings(); e.currentTarget.classList.toggle('on', S.keepOn); screenOn(); };
   $('#sPro').onclick = () => Pro.on ? toast('Voice Tuner Pro is unlocked 🎉') : Pro.sheet();
   // hidden test switch: tap the version 7 times

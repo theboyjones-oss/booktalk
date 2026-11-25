@@ -49,6 +49,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
     private WebView webView;
     private Speaker speaker;
+    private FrameLayout root;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingMic;
     private final ExecutorService net = Executors.newFixedThreadPool(4);
@@ -63,7 +64,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         super.onCreate(savedInstanceState);
         instance = this;
 
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
@@ -439,6 +440,26 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
             });
         }
 
+        /** Is the phone itself in dark mode? (for the "Match phone" theme) */
+        @JavascriptInterface
+        public boolean systemDark() {
+            return (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        }
+
+        /** Light or dark app theme: match the status/navigation bar icons and the window colour. */
+        @JavascriptInterface
+        public void setThemeLight(boolean light) {
+            runOnUiThread(() -> {
+                int bg = light ? Color.rgb(0xfa, 0xf8, 0xf4) : Color.BLACK;
+                if (root != null) root.setBackgroundColor(bg);
+                webView.setBackgroundColor(bg);
+                getWindow().getDecorView().setBackgroundColor(bg);
+                WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+                c.setAppearanceLightStatusBars(light);
+                c.setAppearanceLightNavigationBars(light);
+            });
+        }
+
         /** Keep the screen awake while a book is being read aloud. */
         @JavascriptInterface
         public void keepScreenOn(boolean on) {
@@ -567,6 +588,12 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         } catch (ActivityNotFoundException | SecurityException e) {
             return false;
         }
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration cfg) {
+        super.onConfigurationChanged(cfg);
+        try { emit(new JSONObject().put("type", "uimode")); } catch (JSONException ignored) { }
     }
 
     @Override
