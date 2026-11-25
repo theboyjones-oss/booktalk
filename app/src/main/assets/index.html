@@ -172,7 +172,7 @@ a{color:var(--ac2)}
     <p class="muted small" style="margin-top:0">Add your own voices, then shape how books are read with moods. Tap a mood to edit it.</p>
     <h2 style="margin-top:6px">Your voices</h2>
     <div id="cloneList"></div>
-    <button class="btn block" id="addVoice" style="margin-bottom:6px">🎙️ Add a voice</button>
+    <div class="row" style="margin-bottom:6px"><button class="btn grow" id="addVoice">🎙️ Add a voice</button><button class="btn grow" id="addPreset">⭐ Ready-made narrators</button></div>
     <h2>Moods</h2>
     <div id="moodList"></div>
     <button class="btn ghost block" id="resetMoods" style="margin-top:8px">Restore default moods</button>
@@ -1517,7 +1517,7 @@ function onNative(ev) {
     case 'gem': Gem.onEvent(ev); break;
     case 'kokinst': Kok.onInstall(ev); break;
     case 'kokbusy': Kok.busy = ev.n; { const b = $('#kokBusy'); if (b) b.textContent = ev.n ? `${ev.n} passage${ev.n > 1 ? 's' : ''} being prepared` : 'Nothing waiting'; } break;
-    case 'kokprep': case 'export': Maker.onNative(ev); break;
+    case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'start': Sync.start(ev.id, ev.dur); if (ev.id === P.curId && P.lastEngine) setEngineChip(P.lastEngine); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'voices': Out.loadVoices(); if ($('#v-settings').classList.contains('on')) renderSettings(); break;
@@ -2078,13 +2078,13 @@ function updateMini() {
 function renderClones() {
   $('#cloneList').innerHTML = CLONES.length ? CLONES.map(c => `
     <div class="card moodcard"><div class="ic">🗣️</div><div class="grow"><b>${esc(c.name)}</b>
-      <div class="st">${c.local ? 'Made on this phone · free & offline' : 'Fish Audio · online'} · added ${new Date(c.added).toLocaleDateString('en-GB')}</div>
+      <div class="st">${c.preset ? 'Ready-made narrator · free & offline' : c.local ? 'Made on this phone · free & offline' : 'Fish Audio · online'} · added ${new Date(c.added).toLocaleDateString('en-GB')}</div>
       <div class="row" style="margin-top:10px"><button class="btn grow" data-pv="${c.id}">Preview</button><button class="btn ghost" data-del="${c.id}" style="color:var(--bad)">Delete</button></div></div></div>`).join('')
     : `<p class="small muted" style="margin-top:0">Record or upload 20–30 seconds of someone talking, and BookTalk can read books in that voice, made right on this phone for free, or with Fish Audio online.</p>`;
   $$('[data-pv]').forEach(b => b.onclick = e => { const c = CLONES.find(x => x.id === b.dataset.pv); Preview.run({ ...moodById('story'), clone: c.id }, c.local ? 'clone' : 'fish', e.currentTarget); });
   $$('[data-del]').forEach(b => b.onclick = () => {
     const c = CLONES.find(x => x.id === b.dataset.del);
-    openSheet(`<h4>Delete “${esc(c.name)}”?</h4><p class="muted">Books using this voice will go back to the mood voice. ${c.local ? 'Its recording is deleted from this phone.' : 'It\'s also removed from your Fish Audio account.'}</p>
+    openSheet(`<h4>Delete “${esc(c.name)}”?</h4><p class="muted">Books using this voice will go back to the mood voice. ${c.preset ? 'You can add it again any time.' : c.local ? 'Its recording is deleted from this phone.' : 'It\'s also removed from your Fish Audio account.'}</p>
       <div class="row"><button class="btn grow" onclick="closeSheet()">Cancel</button><button class="btn grow" style="background:var(--bad);color:#fff" id="cdYes">Delete</button></div>`, sh => {
       $('#cdYes', sh).onclick = async () => {
         CLONES = CLONES.filter(x => x.id !== c.id); saveClones();
@@ -2170,6 +2170,81 @@ function addVoiceSheet() {
   });
 }
 $('#addVoice').onclick = addVoiceSheet;
+
+/* Ready-made narrators: sample voices published by Kyutai for Pocket TTS (kyutai/tts-voices on Hugging Face) */
+const PRESETS = [
+  ['anna', 'Anna', 'English woman', 'vctk/p228_023_enhanced.wav'],
+  ['vera', 'Vera', 'English woman', 'vctk/p229_023_enhanced.wav'],
+  ['fantine', 'Fantine', 'English woman (northern)', 'vctk/p244_023_enhanced.wav'],
+  ['eponine', 'Eponine', 'Scottish woman', 'vctk/p262_023_enhanced.wav'],
+  ['charles', 'Charles', 'English man', 'vctk/p254_023_enhanced.wav'],
+  ['paul', 'Paul', 'English man (Midlands)', 'vctk/p259_023_enhanced.wav'],
+  ['alba', 'Alba', 'Woman, relaxed and natural', 'alba-mackenna/casual.wav'],
+  ['caro_davy', 'Caro', 'Woman', 'voice-zero/caro_davy.wav'],
+  ['bill_boerst', 'Bill', 'Man', 'voice-zero/bill_boerst.wav'],
+  ['peter_yearsley', 'Peter', 'Man', 'voice-zero/peter_yearsley.wav'],
+  ['stuart_bell', 'Stuart', 'Man', 'voice-zero/stuart_bell.wav'],
+  ['marius', 'Marius', 'Man, casual', 'voice-donations/Selfie.wav'],
+  ['javert', 'Javert', 'Man', 'voice-donations/Butter.wav'],
+  ['jean', 'Jean', 'Man', 'ears/p010/freeform_speech_01_enhanced.wav'],
+  ['azelma', 'Azelma', 'Canadian woman', 'vctk/p303_023_enhanced.wav'],
+  ['george', 'George', 'American man', 'vctk/p315_023_enhanced.wav'],
+  ['michael', 'Michael', 'American man', 'vctk/p360_023_enhanced.wav'],
+  ['mary', 'Mary', 'American woman', 'vctk/p333_023_enhanced.wav'],
+  ['jane', 'Jane', 'American woman', 'vctk/p339_023_enhanced.wav'],
+  ['eve', 'Eve', 'American woman', 'vctk/p361_023_enhanced.wav'],
+];
+const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
+async function fetchAudio(url) {
+  if (NATIVE?.httpGet) {
+    const ev = await Maker.call('httpGet', url);
+    const bin = atob(ev.b64), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8]);
+  }
+  const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob();
+}
+function presetSheet() {
+  let audio = null;
+  const has = id => CLONES.some(c => c.id === 'pk_' + id);
+  openSheet(`<h4>Ready-made narrators</h4>
+    <p class="small muted" style="margin-top:0">Real people's voices, recreated on this phone by the voice-cloning pack, so they're free, offline and unlimited. Tap ▶ to hear the original speaker. Voices from Kyutai's open voice collection.</p>
+    <div class="pocketInst" style="margin-bottom:8px"></div>
+    ${PRESETS.map(([id, n, d, path]) => `<div class="opt"><button class="iconbtn" data-hear="${path}" style="width:38px;height:38px">${ICON.play}</button><span class="grow"><b>${n}</b><div class="small muted">${d}</div></span>
+      <button class="btn ${has(id) ? 'ghost' : ''}" data-add="${id}" ${has(id) ? 'disabled' : ''}>${has(id) ? 'Added' : 'Add'}</button></div>`).join('')}`, sh => {
+    $$('.pocketInst', sh).forEach(el => renderPocketInstall(el));
+    $$('[data-hear]', sh).forEach(b => b.onclick = async () => {
+      const was = b.dataset.on === '1';
+      $$('[data-hear]', sh).forEach(x => { x.dataset.on = ''; x.innerHTML = ICON.play; });
+      if (audio) { audio.pause(); audio = null; }
+      if (was) return;
+      b.dataset.on = '1';
+      Out.stop(); if (P.playing) P.pause();
+      b.innerHTML = '…';
+      try {
+        const blob = await fetchAudio(presetUrl(b.dataset.hear));
+        audio = new Audio(URL.createObjectURL(blob)); audio.play();
+        audio.onended = () => b.innerHTML = ICON.play;
+        b.innerHTML = ICON.pause;
+      } catch (e) { toast('Couldn\'t load the sample: ' + (e.message || e)); b.innerHTML = ICON.play; }
+    });
+    $$('[data-add]', sh).forEach(b => b.onclick = async () => {
+      if (!Pocket.refresh()) { toast('Download the voice cloning pack first (button above)'); return; }
+      const [id, name, , path] = PRESETS.find(p => p[0] === b.dataset.add);
+      b.disabled = true; b.textContent = 'Adding…';
+      try {
+        const { wav } = await toWav(await fetchAudio(presetUrl(path)), 25);
+        if (!NATIVE.voiceSave('pk_' + id, await blobToB64(wav))) throw new Error('couldn\'t save on this phone');
+        CLONES.push({ id: 'pk_' + id, name, added: Date.now(), local: true, preset: true }); saveClones();
+        b.textContent = 'Added'; b.classList.add('ghost'); renderClones();
+        toast(`${name} added. Pick them as the narrator on any book, or preview under Your voices.`, 4000);
+      } catch (e) { b.disabled = false; b.textContent = 'Add'; toast('Couldn\'t add: ' + (e.message || e), 4000); }
+    });
+  });
+  const stop = () => { if (audio) { audio.pause(); audio = null; } };
+  $('#scrim').addEventListener('click', stop, { once: true });
+}
+$('#addPreset').onclick = () => { if (!NATIVE) { toast('Ready-made narrators work in the Android app'); return; } presetSheet(); };
 
 function renderMoods() {
   renderClones();

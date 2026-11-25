@@ -389,6 +389,32 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
             kokoro.prepare(reqId == null || reqId.isEmpty() ? null : reqId, key, text, 0, voice);
         }
 
+        /** Download a small file (e.g. a sample voice) and hand it back as base64. */
+        @JavascriptInterface
+        public void httpGet(String reqId, String url) {
+            net.execute(() -> {
+                JSONObject o = new JSONObject();
+                try {
+                    o.put("type", "http").put("reqId", reqId);
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setInstanceFollowRedirects(true);
+                    c.setConnectTimeout(20000);
+                    c.setReadTimeout(60000);
+                    int code = c.getResponseCode();
+                    if (code >= 400) throw new IllegalStateException("HTTP " + code);
+                    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                    try (java.io.InputStream in = c.getInputStream()) {
+                        byte[] buf = new byte[65536]; int n;
+                        while ((n = in.read(buf)) > 0) { out.write(buf, 0, n); if (out.size() > 40 * 1024 * 1024) throw new IllegalStateException("File too large"); }
+                    }
+                    o.put("ok", true).put("b64", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
+                } catch (Throwable e) {
+                    try { o.put("ok", false).put("msg", String.valueOf(e.getMessage())); } catch (JSONException ignored) { }
+                }
+                emit(o);
+            });
+        }
+
         @JavascriptInterface
         public void exportChapter(String reqId, String book, String name, String itemsJson) {
             new Thread(() -> {
