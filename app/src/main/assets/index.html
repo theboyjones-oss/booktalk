@@ -149,6 +149,7 @@ label.f{display:block;font-size:12px;color:var(--tx2);margin:14px 2px 6px;font-w
 @keyframes sp{to{transform:rotate(360deg)}}
 #toast{position:fixed;left:50%;bottom:150px;transform:translateX(-50%) translateY(20px);background:#2a2a31;color:var(--tx);padding:11px 16px;border-radius:12px;z-index:120;opacity:0;transition:.25s;max-width:88vw;font-size:14px;text-align:center;pointer-events:none}
 #toast.on{opacity:1;transform:translateX(-50%)}
+#sheet.on ~ #toast{top:calc(env(safe-area-inset-top) + 24px);bottom:auto}
 a{color:var(--ac2)}
 </style>
 </head>
@@ -1405,6 +1406,93 @@ const Maker = {
     }
   },
 };
+/* ---------------- Get the next hour(s) ready: generate ahead in the background, play gap-free later ---------------- */
+const SECS_PER_CHAR = 1 / 14.5;   // rough speech length at 1×
+const Prep = {
+  job: null,
+  // Passages from the current position onwards, for the open book
+  plan(limitSecs, chapterOnly) {
+    if (!P.meta) return [];
+    const inc = P.included(), out = []; let secs = 0;
+    let ch = P.ch, u = P.u;
+    while (true) {
+      const units = P.unitsFor(ch);
+      if (u >= units.length) { if (chapterOnly) break; const nx = inc.find(i => i > ch); if (nx == null) break; ch = nx; u = 0; continue; }
+      const unit = units[u++];
+      if (unit.scene) continue;
+      out.push(unit); secs += unit.text.length * SECS_PER_CHAR;
+      if (limitSecs && secs >= limitSecs) break;
+    }
+    return out;
+  },
+  // Minutes of listening already prepared, continuously from where you are
+  readyMins() {
+    if (!NATIVE || !P.meta || !Pocket.ready) return 0;
+    let secs = 0, n = 0;
+    for (const unit of this.plan(4 * 3600)) {
+      if (!NATIVE.cacheHas(P.key(unit.text))) break;
+      secs += unit.text.length * SECS_PER_CHAR; if (++n > 400) break;
+    }
+    return Math.floor(secs / 60);
+  },
+  fmt(mins) { return mins >= 60 ? `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min` : `${mins} min`; },
+  async start(kind) {
+    if (!Pocket.refresh()) { voicePackSheet(); return; }
+    if (this.job && this.job.state === 'running') { toast('Already getting audio ready'); return; }
+    const limit = kind === '1h' ? 3600 : kind === '2h' ? 7200 : 0;
+    const units = this.plan(limit, kind === 'chapter');
+    const v = P.narrator().voice, temp = P.mood().temp;
+    const todo = units.filter(u => !NATIVE.cacheHas(Pocket.key(u.text, v, temp)));
+    const total = todo.length, label = kind === '1h' ? 'the next hour' : kind === '2h' ? 'the next 2 hours' : kind === 'chapter' ? 'the rest of this chapter' : 'the rest of the book';
+    if (!total) { toast(`${label[0].toUpperCase() + label.slice(1)} is already ready 🎧`); return; }
+    try { await Narr.ensure(P.narrator().id); } catch { toast('Couldn\'t get the narrator\'s voice. Check your internet connection.'); return; }
+    const j = this.job = { state: 'running', done: 0, total, label, title: P.meta.title, t0: Date.now(), cancel: false };
+    toast(`Getting ${label} ready in the background. You can lock the phone.`, 4000);
+    this.update();
+    for (const u of todo) {
+      if (j.cancel) break;
+      const k = Pocket.key(u.text, v, temp);
+      for (let attempt = 0; attempt < 60 && !NATIVE.cacheHas(k) && !j.cancel; attempt++) {
+        try { await Maker.call('clonePrepare', k, u.text, v, temp); }
+        catch (e) { if (!e.cancelled && attempt > 2) break; await sleep(1200); }
+      }
+      j.done++; this.update();
+    }
+    j.state = j.cancel ? 'stopped' : 'done'; this.update();
+    if (!j.cancel) toast(`${label[0].toUpperCase() + label.slice(1)} is ready: ${this.fmt(this.readyMins())} of smooth listening 🎧`, 5000);
+    if (!P.playing) { if (P.meta) Out.session(true, false, P.meta.title, P.chapterTitle()); else Out.session(false, false); }
+  },
+  stop() { if (this.job) this.job.cancel = true; NATIVE?.kokoroCancel?.(); },
+  remaining() {
+    const j = this.job; if (!j || !j.done) return '';
+    const per = (Date.now() - j.t0) / j.done, left = Math.round(per * (j.total - j.done) / 60000);
+    return left < 1 ? 'almost done' : `about ${this.fmt(left)} left`;
+  },
+  update() {
+    const j = this.job; if (!j) return;
+    const pct = Math.floor(j.done / Math.max(1, j.total) * 100);
+    const txt = j.state === 'running' ? `Getting ${j.label} ready · ${pct}%${j.done ? ' · ' + this.remaining() : ''}` : j.state === 'done' ? 'Ready 🎧' : 'Stopped';
+    $$('.prepStatus').forEach(el => el.textContent = txt);
+    $$('.prepBar').forEach(el => el.style.width = pct + '%');
+    if (j.state === 'running' && !P.playing) Out.session(true, true, txt, j.title);   // keeps BookTalk working with the screen off
+    if (!P.playing) setStatus('');
+  },
+  sheet() {
+    const ready = this.readyMins(), j = this.job, running = j && j.state === 'running';
+    openSheet(`<h4>Get audio ready</h4>
+      <p class="muted" style="margin-top:0">BookTalk makes the narration on this phone. Getting it ready in advance means it plays smoothly with no pauses. It carries on with the screen off; plugging in the charger is a good idea.</p>
+      <div class="card small" style="margin-bottom:12px">From where you are: <b>${ready ? this.fmt(ready) + ' ready' : 'nothing ready yet'}</b> with ${esc(P.narrator().name)} (${P.mood().name}).</div>
+      ${running ? `<div class="small prepStatus" style="margin-bottom:8px"></div><div class="prog" style="margin-bottom:14px"><i class="prepBar"></i></div><button class="btn ghost block" id="pgStop">Stop</button>` : `
+      <button class="btn pri block" data-prep="1h" style="margin-bottom:8px">⬇️ Get the next hour ready</button>
+      <div class="row"><button class="btn grow" data-prep="2h">Next 2 hours</button><button class="btn grow" data-prep="chapter">Rest of chapter</button><button class="btn grow" data-prep="book">Whole book</button></div>`}
+      <p class="small muted">Prepared audio is saved, so it stays ready. Changing narrator or mood needs new audio.</p>`, sh => {
+      this.update();
+      $$('[data-prep]', sh).forEach(b => b.onclick = () => { closeSheet(); this.start(b.dataset.prep); });
+      $('#pgStop', sh)?.addEventListener('click', () => { this.stop(); closeSheet(); toast('Stopped. Anything already made stays ready.'); });
+    });
+  },
+};
+
 const AudioName = t => String(t || 'Untitled').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Untitled';
 
 /* ---------------- UI: navigation ---------------- */
@@ -1519,6 +1607,7 @@ async function openBook(id) {
     <div class="bhead">${coverHtml(m)}<div class="grow"><h3>${esc(m.title)}</h3><div class="muted">${esc(m.author || '')}</div>
       <div class="small muted" style="margin-top:6px">${esc(m.format)} · ${m.words.toLocaleString()} words · about ${mins >= 90 ? (mins / 60).toFixed(1) + ' hrs' : mins + ' min'} at 1×</div></div></div>
     <button class="btn pri block" id="bkPlay" style="margin-top:18px;padding:14px">${ICON.play} ${m.progress > 0.002 ? 'Continue listening · ' + Math.round(m.progress * 100) + '%' : 'Start listening'}</button>
+    ${NATIVE ? `<button class="btn block" id="bkPrep" style="margin-top:10px">⬇️ Get the next hour ready</button>` : ''}
     ${NATIVE ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
     <div class="card anal row" id="bkNarr" style="cursor:pointer">
       <div style="font-size:28px">🗣️</div>
@@ -1533,6 +1622,7 @@ async function openBook(id) {
     <p class="small muted">Sections that look like covers, contents, copyright pages, acknowledgements or indexes are switched off. Switch any back on if you want them read.</p>`;
   $('#bkPlay').onclick = () => P.open(id, true);
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
+  $('#bkPrep')?.addEventListener('click', async () => { if (!P.meta || P.meta.id !== id) await P.open(id, false); showPlayer(false); Prep.sheet(); });
   $$('#bkMood [data-mood]').forEach(b => b.onclick = async () => {
     m.mood = b.dataset.mood; await DB.put('meta', m);
     $$('#bkMood [data-mood]').forEach(x => x.classList.toggle('on', x === b));
@@ -1642,8 +1732,13 @@ function renderPlayState() {
   $('#miniPlay').innerHTML = P.playing ? ICON.pause : ICON.play;
 }
 function setStatus(state) {
+  let idle = '<span class="dot"></span> Get audio ready';
+  if (!state) {
+    if (Prep.job?.state === 'running') idle = `<span class="dot l"></span> Getting ready ${Math.floor(Prep.job.done / Math.max(1, Prep.job.total) * 100)}%`;
+    else { const m = Prep.readyMins(); if (m >= 1) idle = `<span class="dot g"></span> ${Prep.fmt(m)} ready`; }
+  }
   $('#chEngine').innerHTML = state === 'loading' ? `<span class="dot l"></span> Preparing…`
-    : state === 'reading' ? `<span class="dot g"></span> Reading` : `<span class="dot"></span> Prepare ahead`;
+    : state === 'reading' ? `<span class="dot g"></span> Reading` : idle;
 }
 function renderProgress() {
   if (!P.meta) return;
@@ -1698,12 +1793,7 @@ $('#chSleep').onclick = () => {
     });
   });
 };
-$('#chEngine').onclick = () => openSheet(`<h4>Prepare ahead</h4>
-  <p class="muted" style="margin-top:0">Voices are made on this phone. BookTalk prepares the next few passages while you listen. If you hear pauses, prepare the whole chapter first (it keeps going with the screen off). Prepared audio is saved, so it's instant next time.</p>
-  <div class="row"><button class="btn pri grow" id="prCh">Prepare this chapter</button><button class="btn ghost" id="prStop">Stop</button></div>`, sh => {
-  $('#prCh', sh).onclick = () => { if (!Pocket.refresh()) { voicePackSheet(); return; } const n = P.ahead(0, true); closeSheet(); toast(n ? `Preparing ${n} passages in the background` : 'This chapter is already prepared'); };
-  $('#prStop', sh).onclick = () => { NATIVE?.kokoroCancel?.(); closeSheet(); toast('Stopped preparing'); };
-});
+$('#chEngine').onclick = () => { if (!P.meta) return; Prep.sheet(); };
 function updateMini() {
   const show = !!P.meta && !$('#player').classList.contains('on');
   $('#mini').classList.toggle('hidden', !show);
