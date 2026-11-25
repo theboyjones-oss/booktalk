@@ -437,11 +437,20 @@ public class KokoroEngine {
                 for (int[] s : sentences(j.text)) {
                     if (j.aborted) break;
                     String piece = j.text.substring(s[0], s[1]);
+                    // The narrator model rambles on "...", so say a plain full stop and add a real pause instead
+                    int padMs = 0;
+                    if (clone) {
+                        String tr = piece.trim();
+                        if (tr.matches("(?s).*(\\.\\.\\.|\u2026)+$")) { tr = tr.replaceAll("(\\.\\.\\.|\u2026)+$", "."); padMs = 380; }
+                        piece = tr.replaceAll("(\\.\\.\\.|\u2026)+\\s+", ", ").replaceAll("(\\.\\.\\.|\u2026)+", ",");
+                        if (piece.isEmpty()) piece = ".";
+                    }
                     long g0 = System.nanoTime();
                     GeneratedAudio a = clone ? t.generateWithConfig(piece, gc) : t.generate(piece, j.sid, 1.0f);
-                    float[] f = a.getSamples();
-                    if (clone && f.length > RATE / 2) {
-                        float r = ((System.nanoTime() - g0) / 1e9f) / (f.length / (float) RATE);
+                    float[] f0 = a.getSamples();
+                    float[] f = padMs > 0 ? java.util.Arrays.copyOf(f0, f0.length + RATE * padMs / 1000) : f0;
+                    if (clone && f0.length > RATE / 2) {
+                        float r = ((System.nanoTime() - g0) / 1e9f) / (f0.length / (float) RATE);
                         rtf = rtf * 0.8f + r * 0.2f;
                     }
                     short[] pcm = new short[f.length];

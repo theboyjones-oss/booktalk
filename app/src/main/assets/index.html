@@ -919,8 +919,8 @@ const Out = {
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   },
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
-  phoneSay(id, text, pitch, rate, voice, pauseMs, flush) {
-    text = speakable(text || '');
+  phoneSay(id, text, pitch, rate, voice, pauseMs, flush, moodId) {
+    text = sayText(text || '', moodId);
     if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
     const u = new SpeechSynthesisUtterance(text || ' ');
@@ -980,7 +980,7 @@ const Pocket = {
     $$('.pocketInst').forEach(el => renderPocketInstall(el));
   },
   refresh() { this.ready = !!(NATIVE && NATIVE.packInstalled && NATIVE.packInstalled('pocket')); return this.ready; },
-  key(text, voice, temp = 0.7) { return 'clone|' + hashText(text) + '|' + voice + (Math.abs(temp - 0.7) > 0.01 ? '|t' + temp : '') + '|s2'; },
+  key(text, voice, temp = 0.7) { return 'clone|' + hashText(text) + '|' + voice + (Math.abs(temp - 0.7) > 0.01 ? '|t' + temp : '') + '|s3'; },
 };
 
 /* ---------------- Player ---------------- */
@@ -1052,15 +1052,36 @@ function speakable(t) {
   return t.trim();
 }
 
+/* Change how sentences end so the voice itself sounds the part (the screen text is untouched) */
+const ABBR = /\b(mr|mrs|ms|dr|st|jr|sr|prof|rev|mt|gen|capt|lt|col|no|etc|vs|[a-z])$/i;
+function moodText(t, style) {
+  if (!style || !t) return t;
+  if (style === 'hush') t = t.replace(/,\s+/g, '... ');
+  return t.replace(/([^\n.!?]*?)(\.\.\.|[.!?]+)(?=\s|$)/g, (m, body, end) => {
+    if (!body.trim() || (end === '.' && ABBR.test(body.trim()))) return m;
+    const words = body.trim().split(/\s+/).length;
+    switch (style) {
+      case 'bright':  return body + (end === '.' && words <= 9 ? '!' : end);
+      case 'exclaim': return body + (end === '.' || end === '...' ? '!' : end === '?' ? '?!' : end);
+      case 'level':   return body + (/!/.test(end) ? '.' : end);
+      case 'trail':   return body + (end === '.' || /!/.test(end) ? '...' : end);
+      case 'hush':    return body + (end === '?' ? '?' : '...');
+    }
+    return m;
+  });
+}
+function sayText(t, moodId) { return moodText(speakable(t), moodOf(moodId).style); }
+
 /* ---------------- Moods: how lively the narrator sounds (Pocket TTS temperature) + pitch + pace ---------------- */
 const NMOODS = [
-  { id: 'normal',  name: 'Normal',  icon: '🙂', temp: 0.7,  pitch: 1.00, pace: 1.00 },
-  { id: 'happy',   name: 'Happy',   icon: '😊', temp: 0.95, pitch: 1.03, pace: 1.04 },
-  { id: 'excited', name: 'Excited', icon: '🤩', temp: 1.15, pitch: 1.06, pace: 1.10 },
-  { id: 'calm',    name: 'Calm',    icon: '😌', temp: 0.45, pitch: 0.99, pace: 0.92 },
-  { id: 'sad',     name: 'Sad',     icon: '😢', temp: 0.4,  pitch: 0.95, pace: 0.86 },
-  { id: 'serious', name: 'Serious', icon: '🧐', temp: 0.35, pitch: 0.97, pace: 0.96 },
-  { id: 'spooky',  name: 'Spooky',  icon: '👻', temp: 0.55, pitch: 0.92, pace: 0.84 },
+  // temp = how lively the AI narrator is · pitch/pace = voice height and speed · gap = pause between passages · style = how sentences end
+  { id: 'normal',  name: 'Normal',  icon: '🙂', temp: 0.7,  pitch: 1.00, pace: 1.00, gap: 1.0, style: '' },
+  { id: 'happy',   name: 'Happy',   icon: '😊', temp: 1.0,  pitch: 1.08, pace: 1.07, gap: 0.8, style: 'bright' },
+  { id: 'excited', name: 'Excited', icon: '🤩', temp: 1.2,  pitch: 1.14, pace: 1.15, gap: 0.6, style: 'exclaim' },
+  { id: 'calm',    name: 'Calm',    icon: '😌', temp: 0.45, pitch: 0.97, pace: 0.88, gap: 1.5, style: 'level' },
+  { id: 'sad',     name: 'Sad',     icon: '😢', temp: 0.35, pitch: 0.90, pace: 0.82, gap: 1.8, style: 'trail' },
+  { id: 'serious', name: 'Serious', icon: '🧐', temp: 0.3,  pitch: 0.94, pace: 0.94, gap: 1.2, style: 'level' },
+  { id: 'spooky',  name: 'Spooky',  icon: '👻', temp: 0.6,  pitch: 0.86, pace: 0.80, gap: 2.0, style: 'hush' },
 ];
 const moodOf = id => NMOODS.find(m => m.id === id) || NMOODS[0];
 const moodButtons = (cur, attr = 'data-mood') => NMOODS.map(m => `<button class="mb ${m.id === cur ? 'on' : ''}" ${attr}="${m.id}"><span>${m.icon}</span>${m.name}</button>`).join('');
@@ -1293,20 +1314,20 @@ const P = {
     const md = this.mood(), k = this.key(unit.text), speed = clamp(S.speed * md.pace, 0.5, 2.5);
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
-    NATIVE.clonePlay(this.curId, k, speakable(unit.text), this.narrator().voice, md.temp, speed, md.pitch, unit.head ? 650 : 120);
+    NATIVE.clonePlay(this.curId, k, sayText(unit.text, md.id), this.narrator().voice, md.temp, speed, md.pitch, Math.round((unit.head ? 650 : 120) * md.gap));
     this.ahead(S.prefetch + 1);
   },
   /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
   qEnd: -1,
   phoneQueue(tok, flush) {
     const md = this.mood(), n = this.narrator();
-    const rate = clamp(S.speed * md.pace, 0.5, 2.5), pitch = clamp(1 + (md.pitch - 1) * 2, 0.5, 2);
+    const rate = clamp(S.speed * md.pace, 0.5, 2.5), pitch = clamp(1 + (md.pitch - 1) * 1.5, 0.5, 2);
     const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24);
     if (from > to) return;
     for (let i = from; i <= to; i++) {
       const un = this.units[i], id = 'q' + tok + '_' + i;
-      if (un.scene) Out.phoneSay(id, '', 1, 1, n.tts, 1000, flush && i === from);
-      else Out.phoneSay(id, un.text, pitch, rate, n.tts, un.head ? 650 : 120, flush && i === from);
+      if (un.scene) Out.phoneSay(id, '', 1, 1, n.tts, Math.round(1000 * md.gap), flush && i === from, md.id);
+      else Out.phoneSay(id, un.text, pitch, rate, n.tts, Math.round((un.head ? 650 : 120) * md.gap), flush && i === from, md.id);
     }
     if (flush) { this.curId = 'q' + tok + '_' + from; Sync.prepare(this.units[from], this.curId, rate); setStatus('reading'); }
     this.qEnd = to;
@@ -1342,7 +1363,7 @@ const P = {
       if (unit.scene) continue;
       const k = Pocket.key(unit.text, v, t);
       if (wholeChapter && NATIVE.cacheHas(k)) continue;
-      NATIVE.clonePrepare('', k, speakable(unit.text), v, t); count++;
+      NATIVE.clonePrepare('', k, sayText(unit.text, this.mood().id), v, t); count++;
     }
     return count;
   },
@@ -1455,7 +1476,7 @@ const Preview = {
       const id = this.id = 'pv' + uid(), n = Phone.get(narId), md = moodOf(moodId);
       this.btn = btn; this.icon = icon || null;
       if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Playing…'; }
-      Out.phoneSay(id, SAMPLE, clamp(1 + (md.pitch - 1) * 2, 0.5, 2), clamp(S.speed * md.pace, 0.5, 2.5), n.tts, 0, true);
+      Out.phoneSay(id, SAMPLE, clamp(1 + (md.pitch - 1) * 1.5, 0.5, 2), clamp(S.speed * md.pace, 0.5, 2.5), n.tts, 0, true, md.id);
       return;
     }
     if (!Pocket.refresh()) { voicePackSheet(); return; }
@@ -1465,7 +1486,7 @@ const Preview = {
       await Narr.ensure(n.id);
       if (this.id !== id) return;
       const md = moodOf(moodId);
-      NATIVE.clonePlay(id, Pocket.key(SAMPLE, n.voice, md.temp), SAMPLE, n.voice, md.temp, clamp(S.speed * md.pace, 0.5, 2.5), md.pitch, 0);
+      NATIVE.clonePlay(id, Pocket.key(SAMPLE, n.voice, md.temp), sayText(SAMPLE, md.id), n.voice, md.temp, clamp(S.speed * md.pace, 0.5, 2.5), md.pitch, 0);
     } catch (e) { toast('Preview failed: ' + (e.message || e)); this.done(); }
   },
   started() { if (this.btn) this.btn.textContent = 'Playing…'; },
@@ -1519,7 +1540,7 @@ const Maker = {
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
   },
-  gen(meta, text, key) { return this.call('clonePrepare', key, speakable(text), Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
+  gen(meta, text, key) { return this.call('clonePrepare', key, sayText(text, meta.mood), Narr.forBook(meta).voice, moodOf(meta.mood).temp); },
   update() {
     const j = this.job; if (!j) return;
     j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
@@ -1627,7 +1648,7 @@ const Prep = {
       if (j.cancel) break;
       const k = Pocket.key(u.text, v, temp);
       for (let attempt = 0; attempt < 60 && !NATIVE.cacheHas(k) && !j.cancel; attempt++) {
-        try { await Maker.call('clonePrepare', k, speakable(u.text), v, temp); }
+        try { await Maker.call('clonePrepare', k, sayText(u.text, P.mood().id), v, temp); }
         catch (e) { if (!e.cancelled && attempt > 2) break; await sleep(1200); }
       }
       j.done++; this.update();
