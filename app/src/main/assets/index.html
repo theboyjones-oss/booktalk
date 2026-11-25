@@ -988,8 +988,9 @@ const Out = {
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   },
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
-  phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone) {
+  phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone, fx = '') {
     text = sayText(text || '', tone);
+    if (fx && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx); return; }
     if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
     const u = new SpeechSynthesisUtterance(text || ' ');
@@ -1230,7 +1231,7 @@ const Pro = {
   PRICE: '£3.99', FREE_VOICES: 1,
   get on() { return LS.get('pro', false); },
   set(v) { LS.set('pro', !!v); },
-  usesStudio(tune) { return AI && !!resolveTune(tune).fx; },
+  usesStudio(tune) { return (AI || FX_PHONE) && !!resolveTune(tune).fx; },
   // why a voice can't be saved on the free version ('' = fine)
   why(tune, isNew) {
     if (this.on) return '';
@@ -1248,7 +1249,7 @@ const Pro = {
       <p class="muted" style="text-align:center;margin:0 0 14px">${lead}</p>
       <div class="pwlist">
         <div>♾️ <b>Unlimited voices</b><span>Make a whole cast of narrators</span></div>
-        ${AI ? `<div>🎚️ <b>Sound studio</b><span>Warmth, clarity, rooms and 8 special effects</span></div>
+        ${AI || FX_PHONE ? `<div>🎚️ <b>Sound studio</b><span>Warmth, clarity, rooms and 8 special effects</span></div>
         <div>📖 <b>Every recipe</b><span>Bedtime story, Ghost story, Pirate radio, Robot butler and more</span></div>
         <div>🎧 <b>Effects everywhere</b><span>In your books and in saved audiobooks</span></div>` : ''}
         <div>🤝 <b>Share voices</b><span>Send your creations to friends</span></div>
@@ -1294,6 +1295,8 @@ const PRESETS = [
 ];
 /* AI narrators (on-device Pocket TTS) are switched off: too slow on phones. Phone voices only. */
 const AI = false;
+// Phone voices can use the Voice Tuner's sound studio: passages are rendered first, then played through the effects
+const FX_PHONE = true;
 
 /* ---------------- Phone voices (the phone's own Google voices, as in BibleTalk: instant, gap-free) ---------------- */
 const REGIONS = { GB: 'British', US: 'American', AU: 'Australian', IN: 'Indian', IE: 'Irish', ZA: 'South African', NG: 'Nigerian', CA: 'Canadian', NZ: 'New Zealand', SG: 'Singapore', PH: 'Philippine', KE: 'Kenyan', GH: 'Ghanaian', TZ: 'Tanzanian' };
@@ -1522,14 +1525,14 @@ const P = {
   /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
   qEnd: -1,
   phoneQueue(tok, flush) {
-    const md = this.tone(), n = this.narrator();
+    const md = this.tone(), n = this.narrator(), fx = Pro.on ? fxJson(md) : '';
     const rate = clamp(S.speed * md.pace, 0.4, 2.5), pitch = md.phonePitch;
     const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24);
     if (from > to) return;
     for (let i = from; i <= to; i++) {
       const un = this.units[i], id = 'q' + tok + '_' + i;
-      if (un.scene) Out.phoneSay(id, '', 1, 1, n.tts, Math.round(1000 * md.gap), flush && i === from, md);
-      else Out.phoneSay(id, un.text, pitch, rate, n.tts, Math.round((un.head ? 650 : 120) * md.gap), flush && i === from, md);
+      if (un.scene) Out.phoneSay(id, '', 1, 1, n.tts, Math.round(1000 * md.gap), flush && i === from, md, fx);
+      else Out.phoneSay(id, un.text, pitch, rate, n.tts, Math.round((un.head ? 650 : 120) * md.gap), flush && i === from, md, fx);
     }
     if (flush) { this.curId = 'q' + tok + '_' + from; Sync.prepare(this.units[from], this.curId, rate); setStatus('reading'); }
     this.qEnd = to;
@@ -1652,6 +1655,7 @@ function onNative(ev) {
     case 'voices': Phone.refresh(); if ($('#narrList')?.offsetParent) renderNarrators(); break;
     case 'kokinst': if (ev.pack === 'pocket') Pocket.onInstall(ev); break;
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
+    case 'expprog': Maker.onProg(ev); break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
@@ -1687,7 +1691,7 @@ const RECIPES = [
   { n: 'Chipmunk', e: '🐿️', t: { emo: { excited: 70, happy: 60 }, pitch: 9, speed: 1.25, live: 0.2, gap: 0.6 } },
   { n: 'Drama queen', e: '🎭', t: { emo: { excited: 60, sad: 50 }, pitch: 1, speed: 0.95, live: 0.4, gap: 1.4, spause: 3 } },
 ];
-if (!AI) for (let i = RECIPES.length - 1; i >= 0; i--) { const e = RECIPES[i].t.effect; if (e && e !== 'none' && e !== 'mega') RECIPES.splice(i, 1); }
+if (!AI && !FX_PHONE) for (let i = RECIPES.length - 1; i >= 0; i--) { const e = RECIPES[i].t.effect; if (e && e !== 'none' && e !== 'mega') RECIPES.splice(i, 1); }
 const EMOJIS = ['🎛️','🗣️','🧙','🧛','🧚','🧜','🦸','🕵️','👑','🎩','🤠','👻','🤖','👽','🐉','🦊','🦉','🐺','🐻','🐱','🌙','⭐','🔥','❄️','🌊','🍂','🎭','📻','🚀','💀','🌹','☕'];
 const NAME_A = ['Velvet', 'Midnight', 'Silver', 'Gentle', 'Thunder', 'Whisper', 'Golden', 'Rusty', 'Misty', 'Crimson', 'Jolly', 'Shadow', 'Copper', 'Honey', 'Stormy', 'Lucky'];
 const NAME_B = ['Fox', 'Owl', 'Storyteller', 'Captain', 'Raven', 'Bard', 'Wanderer', 'Duchess', 'Professor', 'Badger', 'Lantern', 'Pilot', 'Ghost', 'Sailor', 'Robin', 'Wizard'];
@@ -1741,7 +1745,7 @@ const Tuner = {
 
       <h2>Recipes</h2>
       <div class="trecipes">${RECIPES.map((r, i) => `<button class="trec" data-rec="${i}"><span>${r.e}</span>${esc(r.n)}${!Pro.on && Pro.usesStudio(r.t) ? ' <i class="lock">🔒</i>' : ''}</button>`).join('')}</div>
-      ${Pro.on || !AI ? '' : '<div class="small muted" style="margin-top:6px">🔒 recipes use the sound studio. Try them free, unlock Pro to save them.</div>'}
+      ${Pro.on || !(AI || FX_PHONE) ? '' : '<div class="small muted" style="margin-top:6px">🔒 recipes use the sound studio. Try them free, unlock Pro to save them.</div>'}
 
       <h2>Mood pad</h2>
       <div class="tcard">
@@ -1761,10 +1765,10 @@ const Tuner = {
         <div class="tseg" id="tuPause">${PAUSES.map((p, i) => `<button data-sp="${i}" class="${(t.spause ?? 1) === i ? 'on' : ''}">${p}</button>`).join('')}</div>
       </div>
 
-      ${AI ? `      <h2>Sound studio</h2>
+      ${AI || FX_PHONE ? `      <h2>Sound studio</h2>
       <div class="tcard">
-        ${!phone && !Pro.on ? `<button class="prohint" id="tuStudioPro">🔒 <b>Pro</b> · Try every effect now. Unlock Pro to save voices that use them${d.id && Pro.usesStudio(t) ? ' and to hear them in your books' : ''}.</button>` : ''}
-        ${phone ? `<div class="small muted">Sound effects work with the AI narrators. Phone voices are played by Android's own speech engine, which BookTalk can't add effects to. Change the voice above to an AI narrator to use the studio.</div>` : `
+        ${(!phone || FX_PHONE) && !Pro.on ? `<button class="prohint" id="tuStudioPro">🔒 <b>Pro</b> · Try every effect now. Unlock Pro to save voices that use them${d.id && Pro.usesStudio(t) ? ' and to hear them in your books' : ''}.</button>` : ''}
+        ${phone && !FX_PHONE ? `<div class="small muted">Sound effects work with the AI narrators. Phone voices are played by Android's own speech engine, which BookTalk can't add effects to. Change the voice above to an AI narrator to use the studio.</div>` : `
         ${slider('warmth', 'Warmth', -100, 100, 5, t.warmth, 'thin ↔ rich')}
         ${slider('clarity', 'Clarity', -100, 100, 5, t.clarity, 'soft ↔ crisp')}
         ${slider('room', 'Room', 0, 100, 5, t.room, 'dry ↔ cathedral')}
@@ -1803,9 +1807,9 @@ const Tuner = {
       meter('Speed', r.pace, 0.4, 2.5, r.pace.toFixed(2) + '×') +
       (b.phone ? '' : meter('Liveliness', r.temp, 0.1, 1.5, r.temp < 0.4 ? 'steady' : r.temp < 0.85 ? 'natural' : r.temp < 1.2 ? 'lively' : 'wild')) +
       meter('Pauses', r.gap, 0.1, 4, r.gap.toFixed(1) + '×') +
-      `<div class="small muted" style="margin-top:8px">Speaks with ${styleName} · ${PAUSES[r.spause].toLowerCase()} sentence pauses${r.fx && !b.phone ? ' · ' + [r.fx.effect !== 'none' ? FX_LIST.find(f => f.id === r.fx.effect)?.name : '', r.fx.room ? 'room ' + r.fx.room + '%' : '', r.fx.warmth ? 'warmth ' + r.fx.warmth : '', r.fx.clarity ? 'clarity ' + r.fx.clarity : ''].filter(Boolean).join(', ') : ''}</div>` +
+      `<div class="small muted" style="margin-top:8px">Speaks with ${styleName} · ${PAUSES[r.spause].toLowerCase()} sentence pauses${r.fx && (!b.phone || FX_PHONE) ? ' · ' + [r.fx.effect !== 'none' ? FX_LIST.find(f => f.id === r.fx.effect)?.name : '', r.fx.room ? 'room ' + r.fx.room + '%' : '', r.fx.warmth ? 'warmth ' + r.fx.warmth : '', r.fx.clarity ? 'clarity ' + r.fx.clarity : ''].filter(Boolean).join(', ') : ''}</div>` +
       `<div class="small muted" style="margin-top:4px">The mood buttons in the player still work on top of this voice.</div>` +
-      (!Pro.on && r.fx && !b.phone ? `<div class="small" style="margin-top:6px;color:var(--ac2)">🔒 Uses the sound studio, so saving it needs Pro.</div>` : '');
+      (!Pro.on && r.fx && (!b.phone || FX_PHONE) ? `<div class="small" style="margin-top:6px;color:var(--ac2)">🔒 Uses the sound studio, so saving it needs Pro.</div>` : '');
   },
   padDraw() {
     const e = this.d.tune.emo, x = clamp(((e.excited || 0) - (e.calm || 0)) / 100, -1, 1), y = clamp(((e.happy || 0) - (e.sad || 0)) / 100, -1, 1);
@@ -1955,7 +1959,7 @@ const Preview = {
     this.btn = btn; this.icon = icon || null;
     if (n.phone) {
       if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Playing…'; }
-      Out.phoneSay(id, text, md.phonePitch, clamp(S.speed * md.pace, 0.4, 2.5), n.tts, 0, true, md);
+      Out.phoneSay(id, text, md.phonePitch, clamp(S.speed * md.pace, 0.4, 2.5), n.tts, 0, true, md, fxJson(md));
       return;
     }
     if (!Pocket.refresh()) { this.done(); voicePackSheet(); return; }
@@ -1990,17 +1994,20 @@ const Maker = {
       return;
     }
     if (this.job && this.job.state === 'running') { toast('Already saving “' + this.job.title + '”. One book at a time.'); return; }
-    if (Narr.forBook(meta).phone) { openSheet(`<h4>Save as audiobook</h4><p class="muted" style="margin-top:0">Audiobook files are made with the AI narrators. This book uses a phone voice, which reads live and can't be saved as a file.</p><p class="small muted">To save one, change this book's narrator to an AI narrator first.</p><button class="btn block" onclick="closeSheet()">OK</button>`); return; }
-    if (!Pocket.refresh()) { voicePackSheet(); return; }
+    const isPhone = Narr.forBook(meta).phone;
+    if (isPhone && !NATIVE.exportPhone) { toast('Update BookTalk to save phone voices as audiobooks'); return; }
+    if (!isPhone && !Pocket.refresh()) { voicePackSheet(); return; }
     const n = Narr.forBook(meta), plan = this.plan(meta, content);
     const units = plan.reduce((a, c) => a + c.units.filter(u => !u.scene).length, 0);
-    const done = plan.reduce((a, c) => a + c.units.filter(u => !u.scene && NATIVE.cacheHas(this.keyFor(meta, u.text))).length, 0);
+    const savedJob = LS.get('make.' + meta.id, null);
+    const done = isPhone ? plan.filter(c => savedJob?.exported?.includes(c.ch)).reduce((a, c) => a + c.units.filter(u => !u.scene).length, 0)
+                         : plan.reduce((a, c) => a + c.units.filter(u => !u.scene && NATIVE.cacheHas(this.keyFor(meta, u.text))).length, 0);
     const hours = meta.words / 155 / 60;
     openSheet(`<h4>Save as audiobook</h4>
       <p class="small muted" style="margin-top:0">Makes the whole book and saves it as audio files, one per chapter, in <b>Music/BookTalk/${esc(AudioName(meta.title))}</b>. They play in any music or podcast app and can be copied anywhere.</p>
       <div class="card"><b>🗣️ ${esc(n.name)}</b> <span class="small muted">· ${esc(n.desc)} · ${moodOf(meta.mood).icon} ${moodOf(meta.mood).name}</span>
         <div class="small muted" style="margin-top:6px">${plan.length} chapters · about ${hours >= 1 ? hours.toFixed(1) + ' hours' : Math.round(hours * 60) + ' min'} of audio${done ? ` · ${Math.round(done / Math.max(1, units) * 100)}% already made` : ''}</div></div>
-      <p class="small muted">Free, made on this phone. A whole book takes hours, so start it with the phone on charge (overnight is ideal). To use a different narrator or mood, change it on the book page first.</p>
+      <p class="small muted">${isPhone ? `Made on this phone, much faster than real time. A long book still takes a while, so keep BookTalk open and the phone on charge.${n.tune && Pro.usesStudio(n.tune) && !Pro.on ? ' Sound effects are only included with Voice Tuner Pro.' : ''}` : 'Free, made on this phone. A whole book takes hours, so start it with the phone on charge (overnight is ideal).'} To use a different narrator or mood, change it on the book page first.</p>
       <button class="btn pri block" id="mkGo">${LS.get('make.' + meta.id, null) ? 'Continue' : 'Start'}</button>`, sh => {
       $('#mkGo', sh).onclick = () => { closeSheet(); this.run(meta, content); };
     });
@@ -2012,6 +2019,11 @@ const Maker = {
       this.pend.set(id, { res, rej });
       NATIVE[kind](id, ...args);
     });
+  },
+  onProg(ev) {
+    const j = this.job; if (!j || j.state !== 'running' || !this.pend.has(ev.reqId)) return;
+    j.done = (j.base || 0) + Math.round((ev.done / Math.max(1, ev.total)) * (j.chCount || 0));
+    this.update();
   },
   onNative(ev) {
     const p = this.pend.get(ev.reqId); if (!p) return;
@@ -2038,6 +2050,23 @@ const Maker = {
     toast('Saving “' + meta.title + '” as an audiobook. You can keep using the app.', 4000);
     let where = '';
     try {
+      if (Narr.forBook(meta).phone) {
+        const n = Narr.forBook(meta), tn = toneFor(n, meta.mood), fx = Pro.on ? fxJson(tn) : '';
+        for (const c of plan) {
+          j.chNow = c.n + 1;
+          const count = c.units.filter(u => !u.scene).length;
+          if (exported.has(c.ch)) { j.done += count; this.update(); continue; }
+          if (j.cancel) return;
+          const items = c.units.map(u => u.scene ? { gap: 1200 } : { t: sayText(u.text, tn), p: tn.phonePitch, r: tn.pace, v: n.tts, gap: Math.round((u.head ? 800 : 300) * tn.gap) });
+          j.msg = `Chapter ${c.n + 1} of ${plan.length}: ${c.title}`; j.base = j.done; j.chCount = count; this.update();
+          const fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
+          const ev = await this.call('exportPhone', meta.title, fname, JSON.stringify(items), fx);
+          if (j.cancel) return;
+          where = ev.where; exported.add(c.ch); j.done = j.base + count;
+          LS.set('make.' + meta.id, { eng, exported: [...exported] });
+          this.update();
+        }
+      } else
       for (const c of plan) {
         j.chNow = c.n + 1;
         const items = [];
@@ -2288,7 +2317,7 @@ async function openBook(id) {
       <div class="small muted" style="margin-top:6px">${esc(m.format)} · ${m.words.toLocaleString()} words · about ${mins >= 90 ? (mins / 60).toFixed(1) + ' hrs' : mins + ' min'} at 1×</div></div></div>
     <button class="btn pri block" id="bkPlay" style="margin-top:18px;padding:14px">${ICON.play} ${m.progress > 0.002 ? 'Continue listening · ' + Math.round(m.progress * 100) + '%' : 'Start listening'}</button>
     ${NATIVE && !Narr.forBook(m).phone ? `<button class="btn block" id="bkPrep" style="margin-top:10px">⬇️ Get the next hour ready</button>` : ''}
-    ${NATIVE && AI ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
+    ${NATIVE && (AI || NATIVE.exportPhone) ? `<button class="btn block" id="bkMake" style="margin-top:10px">🎧 ${Maker.job?.id === m.id ? 'Audiobook: ' + Maker.statusText() : LS.get('make.' + m.id, null) ? 'Continue saving as audiobook' : 'Save as audiobook'}</button>` : ''}
     <div class="card anal row" id="bkNarr" style="cursor:pointer">
       <div style="font-size:28px">🗣️</div>
       <div class="grow"><div class="small muted">Narrator</div><b>${esc(Narr.forBook(m).name)}</b> <span class="small muted">· ${esc(Narr.forBook(m).desc)}</span></div>
@@ -2490,7 +2519,7 @@ function renderNarrators() {
   const phone = Phone.list();
   const mine = CV.all().map(c => Narr.get(c.id));
   $('#narrList').innerHTML = `<div class="card tunercard" style="margin-bottom:14px">
-      <div class="row"><div style="font-size:34px">🎛️</div><div class="grow"><b style="font-size:17px">Voice Tuner</b> ${Pro.badge()}<div class="small muted">Shape any voice: emotions, pitch, speed and pauses. Save it as your own narrator.</div></div></div>
+      <div class="row"><div style="font-size:34px">🎛️</div><div class="grow"><b style="font-size:17px">Voice Tuner</b> ${Pro.badge()}<div class="small muted">Shape any voice: emotions, pitch, speed, pauses, rooms and effects. Save it as your own narrator.</div></div></div>
       <div class="row" style="gap:8px;margin-top:12px"><button class="btn pri grow" id="nvTune">Create a voice</button><button class="btn" id="nvImport">Import</button></div></div>
     ${mine.length ? `<div class="sect"><b>🎛️ My voices</b></div>` + mine.map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
@@ -2564,7 +2593,7 @@ let verTaps = 0, verLast = 0;
 function renderSettings() {
   $('#setBody').innerHTML = `
     <h2>Voice Tuner Pro</h2>
-    <div class="card row" id="sPro" style="cursor:pointer"><div style="font-size:26px">🎛️</div><div class="grow">${Pro.on ? '<b>Pro unlocked</b> <span class="probadge on">PRO</span><div class="small muted">Thanks! Everything in the Voice Tuner is yours.' + (LS.get('proTest', false) ? ' (test mode)' : '') + '</div>' : `<b>Free version</b><div class="small muted">Unlimited voices${AI ? ', the sound studio, every recipe' : ''} and sharing for ${Pro.PRICE}, once.</div>`}</div>${Pro.on ? '' : '<button class="btn pri">Unlock</button>'}</div>
+    <div class="card row" id="sPro" style="cursor:pointer"><div style="font-size:26px">🎛️</div><div class="grow">${Pro.on ? '<b>Pro unlocked</b> <span class="probadge on">PRO</span><div class="small muted">Thanks! Everything in the Voice Tuner is yours.' + (LS.get('proTest', false) ? ' (test mode)' : '') + '</div>' : `<b>Free version</b><div class="small muted">Unlimited voices${AI || FX_PHONE ? ', the sound studio, every recipe' : ''} and sharing for ${Pro.PRICE}, once.</div>`}</div>${Pro.on ? '' : '<button class="btn pri">Unlock</button>'}</div>
     <h2>Narrator</h2>
     <div class="card row" id="sNarr" style="cursor:pointer"><div style="font-size:26px">🗣️</div><div class="grow"><div class="small muted">Default for new books</div><b>${esc(Narr.get(S.narrator).name)}</b> <span class="small muted">· ${esc(Narr.get(S.narrator).desc)}</span></div><button class="btn">Change</button></div>
     <button class="btn ghost block" id="sMoreVoices" style="margin-top:10px">Get more phone voices</button>

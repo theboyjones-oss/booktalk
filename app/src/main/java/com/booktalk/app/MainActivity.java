@@ -429,6 +429,30 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         @JavascriptInterface
         public void setFx(String json) { speaker.setFx(json); }
 
+        /** Phone voice + Voice Tuner effects: rendered, then played back to back. */
+        @JavascriptInterface
+        public void renderQueue(String id, String text, double pitch, double rate, String voice, int pauseMs, boolean flush, String fxJson) {
+            speaker.queueRendered(id, text, (float) pitch, (float) rate, voice, pauseMs, flush, fxJson);
+        }
+
+        /** Save a chapter read by a phone voice (with optional effects) as an audio file. */
+        @JavascriptInterface
+        public void exportPhone(String reqId, String book, String name, String itemsJson, String fxJson) {
+            new Thread(() -> {
+                JSONObject o = new JSONObject();
+                try {
+                    o.put("type", "export").put("reqId", reqId);
+                    String where = AudiobookExporter.exportPhone(MainActivity.this, speaker.exportRenderer(), book, name, new org.json.JSONArray(itemsJson), fxJson, (done, total) -> {
+                        try { emit(new JSONObject().put("type", "expprog").put("reqId", reqId).put("done", done).put("total", total)); } catch (JSONException ignored) { }
+                    });
+                    o.put("ok", true).put("where", where);
+                } catch (Throwable e) {
+                    try { o.put("ok", false).put("msg", String.valueOf(e.getMessage())); } catch (JSONException ignored) { }
+                }
+                emit(o);
+            }, "export-phone").start();
+        }
+
         @JavascriptInterface
         public void exportChapterFx(String reqId, String book, String name, String itemsJson, double pitch, String fxJson) {
             new Thread(() -> {

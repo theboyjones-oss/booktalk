@@ -422,6 +422,7 @@ public class Speaker {
 
     public void stopAll() {
         stopPcm();
+        if (renderer != null) renderer.cancel();
         if (tts != null) {
             try { tts.stop(); } catch (Exception ignored) { }
         }
@@ -452,4 +453,142 @@ public class Speaker {
         abandonFocus();
         if (tts != null) { try { tts.shutdown(); } catch (Exception ignored) { } }
     }
+
+    /* ---------- Phone voices with Voice Tuner effects ----------
+     * Each passage is rendered to audio a little ahead (by a separate voice-engine instance),
+     * then played back to back through one AudioTrack with the effects applied. */
+    private PhoneRenderer renderer;
+    private PhoneRenderer renderer() { if (renderer == null) renderer = new PhoneRenderer(ctx, "play"); return renderer; }
+    private static final class RItem { String id, text, voice; float pitch, rate; int pauseMs; PhoneRenderer.Pcm pcm; String err; }
+    private static final class Marker { final long frame; final String id; final char kind; final String msg; Marker(long f, String i, char k, String m) { frame = f; id = i; kind = k; msg = m; } }
+    private static final class RSession {
+        int gen; String fxJson;
+        final java.util.concurrent.LinkedBlockingQueue<RItem> todo = new java.util.concurrent.LinkedBlockingQueue<>();
+        final java.util.concurrent.LinkedBlockingQueue<RItem> ready = new java.util.concurrent.LinkedBlockingQueue<>();
+    }
+    private volatile RSession rs;
+
+    public void queueRendered(String id, String text, float pitch, float rate, String voiceName, int pauseMs, boolean flush, String fxJson) {
+        RItem it = new RItem();
+        it.id = id; it.text = text; it.voice = voiceName; it.pitch = pitch; it.rate = rate; it.pauseMs = pauseMs;
+        RSession s = rs;
+        if (flush || s == null || s.gen != gen) {
+            stopAll();
+            requestFocus();
+            s = new RSession(); s.gen = gen; s.fxJson = fxJson == null ? "" : fxJson;
+            rs = s;
+            startRenderThread(s);
+            startPlayThread(s);
+        }
+        s.todo.add(it);
+    }
+
+    private void startRenderThread(RSession s) {
+        Thread th = new Thread(() -> {
+            try {
+                while (s.gen == gen) {
+                    RItem it = s.todo.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (it == null) continue;
+                    if (it.text != null && !it.text.trim().isEmpty()) {
+                        try { it.pcm = renderer().render(it.text, it.pitch, it.rate, it.voice); }
+                        catch (Exception e) { it.err = String.valueOf(e.getMessage()); }
+                    }
+                    if (s.gen != gen) break;
+                    s.ready.add(it);
+                }
+            } catch (InterruptedException ignored) { }
+        }, "render");
+        th.start();
+    }
+
+    private void startPlayThread(RSession s) {
+        Thread th = new Thread(() -> {
+            AudioTrack t = null;
+            java.util.concurrent.ConcurrentLinkedQueue<Marker> marks = new java.util.concurrent.ConcurrentLinkedQueue<>();
+            try {
+                int trackRate = 0, bufFrames = 0;
+                Fx fx = null;
+                long written = 0, padded = 0;
+                while (s.gen == gen) {
+                    RItem it = s.ready.poll(80, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (it == null) {
+                        // nothing new yet: push the last audio all the way out so its "done" fires
+                        if (t != null && padded < bufFrames) {
+                            short[] z = new short[trackRate / 25];
+                            if (fx != null) z = fx.process(z, 0, z.length);
+                            int n = t.write(z, 0, z.length);
+                            if (n > 0) { written += n; padded += n; }
+                        }
+                        continue;
+                    }
+                    if (t == null) {
+                        trackRate = it.pcm != null ? it.pcm.rate : 24000;
+                        int minBuf = AudioTrack.getMinBufferSize(trackRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                        int bufBytes = Math.max(minBuf * 2, trackRate / 5 * 2);
+                        bufFrames = bufBytes / 2;
+                        t = new AudioTrack.Builder().setAudioAttributes(attrs)
+                                .setAudioFormat(new AudioFormat.Builder().setSampleRate(trackRate)
+                                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                                .setBufferSizeInBytes(bufBytes).setTransferMode(AudioTrack.MODE_STREAM).build();
+                        current = t;
+                        t.play();
+                        fx = Fx.make(s.fxJson, trackRate);
+                        startMonitor(s, t, marks);
+                    }
+                    if (it.err != null && !"cancelled".equals(it.err)) { marks.add(new Marker(written, it.id, 'E', it.err)); continue; }
+                    if (it.err != null) continue;
+                    marks.add(new Marker(written, it.id, 'S', null));
+                    short[] data = it.pcm != null ? PhoneRenderer.resample(it.pcm.s, it.pcm.rate, trackRate) : new short[0];
+                    short[] pause = new short[(int) ((long) trackRate * Math.max(0, it.pauseMs) / 1000)];
+                    for (short[] part : new short[][]{data, pause}) {
+                        if (part.length == 0) continue;
+                        short[] out = fx != null ? fx.process(part, 0, part.length) : part;
+                        int off = 0;
+                        while (off < out.length && s.gen == gen) {
+                            int n = t.write(out, off, Math.min(4096, out.length - off));
+                            if (n < 0) throw new IllegalStateException("AudioTrack write " + n);
+                            off += n;
+                        }
+                        written += out.length;
+                    }
+                    padded = 0;
+                    marks.add(new Marker(written, it.id, 'D', null));
+                }
+            } catch (Throwable e) {
+                if (s.gen == gen) { Marker m = marks.peek(); listener.onError(m != null ? m.id : "render", String.valueOf(e.getMessage())); }
+            } finally {
+                if (t != null) {
+                    if (current == t) current = null;
+                    try { t.pause(); t.flush(); } catch (Exception ignored) { }
+                    try { t.release(); } catch (Exception ignored) { }
+                }
+            }
+        }, "render-play");
+        th.start();
+    }
+
+    // Fires start/done events when the speaker actually reaches each passage
+    private void startMonitor(RSession s, AudioTrack t, java.util.concurrent.ConcurrentLinkedQueue<Marker> marks) {
+        Thread th = new Thread(() -> {
+            try {
+                while (s.gen == gen) {
+                    long head;
+                    try { head = t.getPlaybackHeadPosition() & 0xffffffffL; } catch (Exception e) { break; }
+                    Marker m;
+                    while ((m = marks.peek()) != null && m.frame <= head && s.gen == gen) {
+                        marks.poll();
+                        if (m.kind == 'S') listener.onStart(m.id, -1);
+                        else if (m.kind == 'D') listener.onDone(m.id);
+                        else listener.onError(m.id, m.msg);
+                    }
+                    Thread.sleep(40);
+                }
+            } catch (InterruptedException ignored) { }
+        }, "render-mon");
+        th.start();
+    }
+
+    /** For saving audiobooks with phone voices: a renderer that never touches playback. */
+    private PhoneRenderer exportRenderer;
+    public synchronized PhoneRenderer exportRenderer() { if (exportRenderer == null) exportRenderer = new PhoneRenderer(ctx, "export"); return exportRenderer; }
 }

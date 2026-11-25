@@ -34,10 +34,54 @@ public class AudiobookExporter {
 
     public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch) throws Exception { return export(ctx, cache, book, name, items, pitch, ""); }
 
+    /** Supplies the next block of 16-bit PCM at RATE (speech plus its pause), or null at the end. */
+    interface Source { byte[] next() throws Exception; }
+
     public static String export(Context ctx, AudioCache cache, String book, String name, JSONArray items, float pitch, String fxJson) throws Exception {
+        final int[] idx = {0};
+        Source src = () -> {
+            if (idx[0] >= items.length()) return null;
+            JSONObject it = items.getJSONObject(idx[0]++);
+            String k = it.optString("k", "");
+            byte[] pcm = k.isEmpty() ? null : resample(cache.get(k), pitch);
+            return withGap(pcm, it.optInt("gap", 0));
+        };
+        return save(ctx, book, name, src, fxJson);
+    }
+
+    public interface Progress { void at(int done, int total); }
+
+    /** Phone voices: items [{"t": text, "p": pitch, "r": rate, "v": voice, "gap": ms}], rendered one by one. */
+    public static String exportPhone(Context ctx, PhoneRenderer rend, String book, String name, JSONArray items, String fxJson, Progress prog) throws Exception {
+        final int[] idx = {0};
+        Source src = () -> {
+            if (idx[0] >= items.length()) return null;
+            JSONObject it = items.getJSONObject(idx[0]++);
+            String t = it.optString("t", "");
+            byte[] pcm = null;
+            if (!t.trim().isEmpty()) {
+                PhoneRenderer.Pcm r = rend.render(t, (float) it.optDouble("p", 1), (float) it.optDouble("r", 1), it.optString("v", ""));
+                short[] sh = PhoneRenderer.resample(r.s, r.rate, RATE);
+                pcm = new byte[sh.length * 2];
+                ByteBuffer.wrap(pcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(sh);
+            }
+            if (prog != null) prog.at(idx[0], items.length());
+            return withGap(pcm, it.optInt("gap", 0));
+        };
+        return save(ctx, book, name, src, fxJson);
+    }
+
+    private static byte[] withGap(byte[] pcm, int gapMs) {
+        int silence = (int) ((long) RATE * gapMs / 1000) * 2;
+        byte[] cur = new byte[(pcm != null ? pcm.length : 0) + silence];
+        if (pcm != null) System.arraycopy(pcm, 0, cur, 0, pcm.length);
+        return cur;
+    }
+
+    private static String save(Context ctx, String book, String name, Source src, String fxJson) throws Exception {
         File tmp = new File(ctx.getCacheDir(), "export-" + System.nanoTime() + ".m4a");
         try {
-            encode(cache, items, tmp, pitch, Fx.make(fxJson, RATE));
+            encode(src, tmp, Fx.make(fxJson, RATE));
             String folder = "BookTalk/" + clean(book);
             String file = clean(name) + ".m4a";
             if (Build.VERSION.SDK_INT >= 29) {
@@ -100,7 +144,7 @@ public class AudiobookExporter {
         return out;
     }
 
-    private static void encode(AudioCache cache, JSONArray items, File out, float pitch, Fx fx) throws Exception {
+    private static void encode(Source src, File out, Fx fx) throws Exception {
         MediaFormat fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, RATE, 1);
         fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, 64000);
@@ -113,7 +157,6 @@ public class AudiobookExporter {
         boolean muxing = false, inputDone = false, outputDone = false;
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
-        int item = 0;            // which item we're reading
         byte[] cur = null;       // current PCM block
         int pos = 0;
         long framesIn = 0;
@@ -129,15 +172,9 @@ public class AudiobookExporter {
                         int filled = 0;
                         while (filled < cap) {
                             if (cur == null || pos >= cur.length) {
-                                if (item >= items.length()) break;
-                                JSONObject it = items.getJSONObject(item++);
-                                String k = it.optString("k", "");
-                                byte[] pcm = k.isEmpty() ? null : resample(cache.get(k), pitch);
-                                int gap = it.optInt("gap", 0);
-                                int silence = (int) ((long) RATE * gap / 1000) * 2;
-                                int len = (pcm != null ? pcm.length : 0) + silence;
-                                cur = new byte[len];
-                                if (pcm != null) System.arraycopy(pcm, 0, cur, 0, pcm.length);
+                                byte[] blk = src.next();
+                                if (blk == null) break;
+                                cur = blk;
                                 if (fx != null && cur.length > 1) {   // Voice Tuner effects, baked in (silence too, so echoes ring out)
                                     short[] sh = new short[cur.length / 2];
                                     java.nio.ByteBuffer.wrap(cur).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(sh);
