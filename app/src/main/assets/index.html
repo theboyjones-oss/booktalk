@@ -1339,14 +1339,18 @@ function toneFor(nar, moodId, emo = 100) {
 }
 // Expressive delivery: each sentence gets its own lift. Dialogue sounds brighter, exclamations rise,
 // questions lift, and sentences that trail off slow down. Strength follows the emotion slider.
-function sentenceTone(text, inQuote, k = 1) {
+function sentenceTone(text, inQuote, k = 1, idx = 0) {
   const t = text.trim(), end = t.replace(/["'”’)\]\s]+$/, '').slice(-3);
-  let p = 1, r = 1;
-  if (inQuote) { p *= 1 + 0.05 * k; r *= 1 + 0.03 * k; }
+  // overall energy: calmer and lower below 100%, brighter and quicker above
+  let p = 1 + 0.10 * (k - 1), r = 1 + 0.06 * (k - 1);
+  // sentence-to-sentence melody so it doesn't drone (none at 0%, sing-song at 200%)
+  const wob = Math.sin(idx * 2.399 + t.length * 0.37);
+  p *= 1 + 0.05 * k * wob;
+  if (inQuote) { p *= 1 + 0.08 * k; r *= 1 + 0.04 * k; }
   const qEnd = (t.match(/([!?])["'”’]/) || [])[1];      // ‘Is anyone there?’ she called.
-  if (/!$/.test(end) || qEnd === '!') { p *= 1 + 0.07 * k; r *= 1 + 0.06 * k; }
-  else if (/\?$/.test(end) || qEnd === '?') { p *= 1 + 0.05 * k; }
-  else if (/(\.\.\.|…)$/.test(end) || /[—–-]$/.test(end)) { p *= 1 - 0.03 * k; r *= 1 - 0.08 * k; }
+  if (/!$/.test(end) || qEnd === '!') { p *= 1 + 0.12 * k; r *= 1 + 0.08 * k; }
+  else if (/\?$/.test(end) || qEnd === '?') { p *= 1 + 0.08 * k; }
+  else if (/(\.\.\.|…)$/.test(end) || /[—–-]$/.test(end)) { p *= 1 - 0.05 * k; r *= 1 - 0.12 * k; }
   return { p, r };
 }
 // which sentences are mostly dialogue (inside quotation marks)
@@ -1696,7 +1700,7 @@ const P = {
       // one utterance per sentence: the voice tells us exactly when each starts, so the highlight is exact
       const spans = this.qSents[i] = sentenceSpans(un.text), quoted = quoteFlags(un.text, spans);
       spans.forEach(([a, b], k) => {
-        const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k);
+        const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k, i * 7 + k);
         Out.phoneSay(base + '_' + k, un.text.slice(a, b).trim(), clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, last ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
         first = false;
       });
@@ -1846,7 +1850,7 @@ function onNative(ev) {
 }
 
 /* ---------------- Voice preview ---------------- */
-const SAMPLE = 'The house at the end of the lane had been empty for years. Then, one wet November evening, a light came on in the attic window.';
+const SAMPLE = 'The house at the end of the lane had been empty for years. Then, one wet November evening, a light came on in the attic window. “Is anyone there?” Martha called. Nobody answered!';
 /* ================= VOICE TUNER ================= */
 const RECIPES = [
   { n: 'Bedtime story', e: '🌙', t: { emo: { calm: 70, happy: 20 }, pitch: -1, speed: 0.9, live: -0.1, gap: 1.4, spause: 2, warmth: 45, clarity: -20, room: 10 } },
@@ -2134,7 +2138,11 @@ const Preview = {
     this.btn = btn; this.icon = icon || null;
     if (n.phone) {
       if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Playing…'; }
-      Out.phoneSay(id, text, md.phonePitch, clamp(S.speed * md.pace, 0.4, 2.5), n.tts, 0, true, md, fxJson(md));
+      const spans = sentenceSpans(text), q = quoteFlags(text, spans), rate = clamp(S.speed * md.pace, 0.4, 2.5);
+      spans.forEach(([a, b], i) => {
+        const st = sentenceTone(text.slice(a, b), q[i], md.k, i), sid = i === spans.length - 1 ? id : id + 's' + i;
+        Out.phoneSay(sid, text.slice(a, b).trim(), clamp(md.phonePitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, 0, i === 0, md, fxJson(md));
+      });
       return;
     }
     if (!Pocket.refresh()) { this.done(); voicePackSheet(); return; }
@@ -2236,7 +2244,7 @@ const Maker = {
             if (u.scene) return [{ gap: 1200 }];
             const spans = sentenceSpans(u.text), q = quoteFlags(u.text, spans);
             return spans.map(([a, b2], i) => {
-              const st = sentenceTone(u.text.slice(a, b2), q[i], tn.k), last = i === spans.length - 1;
+              const st = sentenceTone(u.text.slice(a, b2), q[i], tn.k, i), last = i === spans.length - 1;
               return { t: sayText(u.text.slice(a, b2).trim(), tn), p: clamp(tn.phonePitch * st.p, 0.5, 2), r: clamp(tn.pace * st.r, 0.4, 2.5), v: n.tts, gap: last ? Math.round((u.head ? 800 : 300) * tn.gap) : 0 };
             });
           });
@@ -2552,7 +2560,7 @@ const Gut = {
     const p = new URLSearchParams({ languages: 'en', page });
     if (this.q) p.set('search', this.q);
     if (this.topic) p.set('topic', this.topic);
-    const j = JSON.parse(this.text(await this.get('https://gutendex.com/books/?' + p)));
+    const j = JSON.parse(this.text(await this.get('https://gutendex.com/books/?' + p, 45000)));
     return {
       more: !!j.next,
       books: (j.results || []).filter(b => b.media_type === 'Text' || !b.media_type).map(b => ({
@@ -2567,12 +2575,12 @@ const Gut = {
   async opds(page) {
     const q = [this.q, this.topic].filter(Boolean).join(' ');
     const url = 'https://www.gutenberg.org/ebooks/search.opds/?' + new URLSearchParams(q ? { query: q, start_index: (page - 1) * 25 + 1 } : { sort_order: 'downloads', start_index: (page - 1) * 25 + 1 });
-    const doc = new DOMParser().parseFromString(this.text(await this.get(url)), 'application/xml');
+    const doc = new DOMParser().parseFromString(this.text(await this.get(url, 30000, 'https://www.gutenberg.org/ebooks/')), 'application/xml');
     const books = [];
     for (const e of doc.getElementsByTagName('entry')) {
       let id = 0;
       for (const l of e.getElementsByTagName('link')) { const m = (l.getAttribute('href') || '').match(/\/ebooks\/(\d+)/); if (m) { id = +m[1]; break; } }
-      if (!id) { const m = (e.getElementsByTagName('id')[0]?.textContent || '').match(/(\d+)\D*$/); if (m) id = +m[1]; }
+      if (!id) { const m = (e.getElementsByTagName('id')[0]?.textContent || '').match(/\/ebooks\/(\d+)/); if (m) id = +m[1]; }
       const title = e.getElementsByTagName('title')[0]?.textContent?.trim();
       if (!id || !title) continue;
       const author = e.getElementsByTagName('author')[0]?.getElementsByTagName('name')[0]?.textContent?.trim() || e.getElementsByTagName('content')[0]?.textContent?.trim() || '';
@@ -2582,11 +2590,25 @@ const Gut = {
   },
   async load(reset) {
     const seq = ++this.seq;
-    if (reset) { this.page = 1; this.list = []; this.more = false; }
+    if (reset) { this.page = 1; this.list = []; this.more = false; this.src = ''; }
     this.loading = true; this.err = ''; this.render();
     let r;
-    try { r = await this.gutendex(this.page); }
-    catch (e1) { try { r = await this.opds(this.page); } catch (e2) { if (seq === this.seq) { this.err = e1.message || String(e1); this.loading = false; this.render(); } return; } }
+    try {
+      if (reset || !this.src) {
+        // ask both catalogues at once; the first with books wins (Gutendex search can be slow)
+        const has = src => x => x.books.length ? { ...x, src } : Promise.reject(new Error('No books found. Try a different search.'));
+        const g = this.gutendex(this.page).then(has('g')), o = this.opds(this.page).then(has('o'));
+        g.catch(() => {}); o.catch(() => {});
+        r = await (!this.q && !this.topic ? g.catch(() => o) : Promise.any([g, o]));
+        this.src = r.src;
+      } else r = this.src === 'o' ? await this.opds(this.page) : await this.gutendex(this.page);
+    } catch (e) {
+      if (seq === this.seq) {
+        const errs = e?.errors || [e], msg = errs.map(x => x?.message || '').find(m => /No books/.test(m)) || errs[0]?.message || String(e);
+        this.err = /No books/.test(msg) ? '' : msg; this.loading = false; this.render();
+      }
+      return;
+    }
     if (seq !== this.seq) return;
     const seen = new Set(this.list.map(b => b.id));
     this.list.push(...r.books.filter(b => !seen.has(b.id)));
@@ -2619,7 +2641,7 @@ const Gut = {
           ${b.downloads ? `<div class="small muted">${b.downloads.toLocaleString()} downloads this month</div>` : ''}</div>
         ${this.inLib.has('gutenberg:' + b.id) ? `<button class="btn sm" data-openlib="${b.id}">✓ Open</button>` : `<button class="btn pri sm" data-get="${b.id}">Get</button>`}
       </div>`).join('') +
-      (this.loading ? `<div class="muted" style="text-align:center;padding:20px">Loading books…</div>` : '') +
+      (this.loading ? `<div class="muted" style="text-align:center;padding:20px">${this.q || this.topic ? 'Searching the library… this can take a few seconds' : 'Loading books…'}</div>` : '') +
       (this.err ? `<div class="card" style="text-align:center"><div class="muted">${esc(this.err)}</div><button class="btn" id="gutRetry" style="margin-top:10px">Try again</button></div>` : '') +
       (!this.loading && !this.err && !this.list.length ? `<div class="muted" style="text-align:center;padding:20px">No books found. Try a different search.</div>` : '') +
       (this.more && !this.loading ? `<button class="btn block" id="gutMore" style="margin-top:10px">Show more</button>` : '');
