@@ -429,6 +429,15 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         @JavascriptInterface
         public void setFx(String json) { speaker.setFx(json); }
 
+        /** Keep the screen awake while a book is being read aloud. */
+        @JavascriptInterface
+        public void keepScreenOn(boolean on) {
+            runOnUiThread(() -> {
+                if (on) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
+        }
+
         /** Phone voice + Voice Tuner effects: rendered, then played back to back. */
         @JavascriptInterface
         public void renderQueue(String id, String text, double pitch, double rate, String voice, int pauseMs, boolean flush, String fxJson) {
