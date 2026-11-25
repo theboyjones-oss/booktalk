@@ -246,6 +246,21 @@ a{color:var(--ac2)}
 
 /* the sentence being spoken right now */
 #reader span.w.cs{color:var(--tx);background:var(--hl);box-shadow:-.16em 0 0 var(--hl),.16em 0 0 var(--hl);border-radius:2px;transition:background .15s}
+
+/* Free books */
+.gsearch{display:flex;gap:8px;margin-bottom:10px}
+.gsearch input{flex:1;min-width:0}
+.gtopics{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:4px;margin:0 -16px;padding-left:16px;padding-right:16px}
+.gtopics::-webkit-scrollbar{display:none}
+.gtopics button{flex:none;background:var(--s2);border:1px solid var(--line);border-radius:999px;padding:8px 13px;font-size:13px;font-weight:600;white-space:nowrap}
+.gtopics button.on{background:var(--acbg);border-color:var(--ac);color:var(--ac2)}
+.gbook{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.gcov{position:relative;flex:none;width:52px;height:78px;border-radius:6px;overflow:hidden;background:linear-gradient(135deg,#6b2d4a,#2c1a3b);display:flex;align-items:center;justify-content:center;padding:4px;text-align:center;font-family:var(--serif);font-size:8px;line-height:1.2;color:#f3e7ef}
+.gcov.big{width:90px;height:135px;font-size:12px}
+.gcov img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ginfo{min-width:0} .ginfo b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
+.gsubj{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px} .gsubj span{font-size:11px;background:var(--s2);border-radius:999px;padding:3px 8px;color:var(--tx2)}
+nav.tabs button{font-size:11px}
 </style>
 </head>
 <body>
@@ -254,6 +269,12 @@ a{color:var(--ac2)}
   <section class="view on" id="v-library">
     <header class="top"><h1>Book<b>Talk</b></h1></header>
     <div id="libList"></div>
+  </section>
+
+  <!-- FREE BOOKS -->
+  <section class="view" id="v-free">
+    <header class="top"><h1>Free <b>books</b></h1></header>
+    <div id="gutBody"></div>
   </section>
 
   <!-- BOOK PAGE -->
@@ -291,6 +312,7 @@ a{color:var(--ac2)}
 
 <nav class="tabs">
   <button data-tab="library" class="on"><svg viewBox="0 0 24 24"><path d="M4 6H2v14a2 2 0 0 0 2 2h14v-2H4zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2m-1 9h-10V9h10zm-4 4H9v-2h6zm4-8H9V5h10z"/></svg>Library</button>
+  <button data-tab="free"><svg viewBox="0 0 24 24"><path d="M18 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2m-6 15-4-4h3V7h2v6h3z"/></svg>Free books</button>
   <button data-tab="voices"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3m5.3-3A5.3 5.3 0 0 1 12 16.1 5.3 5.3 0 0 1 6.7 11H5a7 7 0 0 0 6 6.7V21h2v-3.3a7 7 0 0 0 6-6.7z"/></svg>Narrators</button>
   <button data-tab="settings"><svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.7a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.7a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7"/></svg>Settings</button>
 </nav>
@@ -2290,6 +2312,7 @@ function setTab(tab) {
   if (tab === 'library') renderLibrary();
   if (tab === 'voices') renderMoods();
   if (tab === 'settings') renderSettings();
+  if (tab === 'free') Gut.open();
 }
 function showPlayer(on) {
   if (!on && $('#player').classList.contains('on') && bookPageId) setTimeout(() => openBook(bookPageId), 0);   // reflect narrator/mood changes
@@ -2355,7 +2378,11 @@ $('#fab').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = async e => {
   const file = e.target.files[0]; e.target.value = '';
   if (!file) return;
-  busy('Opening ' + file.name, 'Pulling out the story text…');
+  importFile(file);
+};
+// Open a book file and add it to the library (extra: fields to keep on the book, e.g. where it came from)
+async function importFile(file, extra = {}, quiet) {
+  if (!quiet) busy('Opening ' + file.name, 'Pulling out the story text…');
   try {
     const book = await parseBook(file, s => $('#busyS').textContent = s);
     book.chapters.forEach(c => { const why = classify(c, c.typeHint); c.skip = S.skipMatter && !!why; c.why = why; });
@@ -2369,16 +2396,157 @@ $('#fileIn').onchange = async e => {
       words: book.chapters.reduce((a, c) => a + c.paras.reduce((b, p) => b + p.split(/\s+/).length, 0), 0),
       narrator: S.narrator, pos: null, progress: 0,
       subject: book.subject || '', description: book.description || '',
+      ...extra,
     };
     const first = meta.include.indexOf(true); meta.pos = { ch: first < 0 ? 0 : first, p: 0 };
     await DB.put('content', { id, chapters: book.chapters.map(c => ({ title: c.title, paras: c.paras })) });
     await DB.put('meta', meta);
     busy(false);
     openBook(id);
+    return id;
   } catch (err) {
     busy(false); console.error(err);
     openSheet(`<h4>Couldn't open that book</h4><p class="muted">${esc(err.message || err)}</p><button class="btn block" onclick="closeSheet()">OK</button>`);
+    return null;
   }
+}
+
+/* ================= FREE BOOKS (Project Gutenberg) ================= */
+const GUT_TOPICS = [
+  ['', '⭐ Popular'], ['adventure', '🧭 Adventure'], ['detective', '🔍 Mystery'], ['science fiction', '🚀 Sci-fi'], ['horror', '👻 Horror'],
+  ['love stories', '💌 Romance'], ['children', '🧸 Children'], ['fantasy', '🐉 Fantasy'], ['humor', '😂 Humour'], ['history', '🏛️ History'],
+  ['biography', '👤 Biography'], ['philosophy', '🤔 Philosophy'], ['poetry', '📜 Poetry'], ['plays', '🎭 Plays'], ['sea stories', '⚓ Sea stories'], ['war', '⚔️ War'],
+];
+const Gut = {
+  q: '', topic: '', page: 1, list: [], more: false, loading: false, err: '', seq: 0, inLib: new Set(),
+  cover: id => `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`,
+  // download through the app (no browser restrictions), with a time limit
+  async get(url, ms = 20000) {
+    const run = async () => {
+      if (NATIVE?.httpGet) {
+        const ev = await Maker.call('httpGet', url);
+        if (!ev.ok) throw new Error(ev.msg || 'Download failed');
+        const bin = atob(ev.b64), u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        return u8;
+      }
+      const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status); return new Uint8Array(await r.arrayBuffer());
+    };
+    return Promise.race([run(), new Promise((_, rej) => setTimeout(() => rej(new Error('No answer from the library. Check your internet connection.')), ms))]);
+  },
+  text: u8 => new TextDecoder().decode(u8),
+  // main catalogue (Gutendex: a JSON index of Project Gutenberg)
+  async gutendex(page) {
+    const p = new URLSearchParams({ languages: 'en', page });
+    if (this.q) p.set('search', this.q);
+    if (this.topic) p.set('topic', this.topic);
+    const j = JSON.parse(this.text(await this.get('https://gutendex.com/books/?' + p)));
+    return {
+      more: !!j.next,
+      books: (j.results || []).filter(b => b.media_type === 'Text' || !b.media_type).map(b => ({
+        id: b.id, title: b.title || 'Untitled',
+        author: (b.authors || []).map(a => a.name.replace(/^([^,]+), (.+)$/, '$2 $1')).join(', '),
+        downloads: b.download_count || 0, summary: (b.summaries || [])[0] || '',
+        subjects: (b.subjects || []).concat(b.bookshelves || []).map(x => x.replace(/^Browsing: /, '')).slice(0, 6),
+      })),
+    };
+  },
+  // backup: Project Gutenberg's own catalogue feed (OPDS)
+  async opds(page) {
+    const q = [this.q, this.topic].filter(Boolean).join(' ');
+    const url = 'https://www.gutenberg.org/ebooks/search.opds/?' + new URLSearchParams(q ? { query: q, start_index: (page - 1) * 25 + 1 } : { sort_order: 'downloads', start_index: (page - 1) * 25 + 1 });
+    const doc = new DOMParser().parseFromString(this.text(await this.get(url)), 'application/xml');
+    const books = [];
+    for (const e of doc.getElementsByTagName('entry')) {
+      let id = 0;
+      for (const l of e.getElementsByTagName('link')) { const m = (l.getAttribute('href') || '').match(/\/ebooks\/(\d+)/); if (m) { id = +m[1]; break; } }
+      if (!id) { const m = (e.getElementsByTagName('id')[0]?.textContent || '').match(/(\d+)\D*$/); if (m) id = +m[1]; }
+      const title = e.getElementsByTagName('title')[0]?.textContent?.trim();
+      if (!id || !title) continue;
+      const author = e.getElementsByTagName('author')[0]?.getElementsByTagName('name')[0]?.textContent?.trim() || e.getElementsByTagName('content')[0]?.textContent?.trim() || '';
+      books.push({ id, title, author: author.replace(/^([^,]+), (.+)$/, '$2 $1'), downloads: 0, summary: '', subjects: [] });
+    }
+    return { more: !!doc.querySelector('link[rel=next]'), books };
+  },
+  async load(reset) {
+    const seq = ++this.seq;
+    if (reset) { this.page = 1; this.list = []; this.more = false; }
+    this.loading = true; this.err = ''; this.render();
+    let r;
+    try { r = await this.gutendex(this.page); }
+    catch (e1) { try { r = await this.opds(this.page); } catch (e2) { if (seq === this.seq) { this.err = e1.message || String(e1); this.loading = false; this.render(); } return; } }
+    if (seq !== this.seq) return;
+    const seen = new Set(this.list.map(b => b.id));
+    this.list.push(...r.books.filter(b => !seen.has(b.id)));
+    this.more = r.more; this.page++; this.loading = false; this.render();
+  },
+  async refreshLib() { this.inLib = new Set((await DB.all('meta')).map(m => m.src).filter(Boolean)); },
+  async open() {
+    await this.refreshLib();
+    if (!$('#gutBody').dataset.ready) {
+      $('#gutBody').dataset.ready = '1';
+      $('#gutBody').innerHTML = `
+        <form id="gutForm" class="gsearch"><input id="gutQ" type="search" placeholder="Search titles or authors" enterkeyhint="search"><button class="btn pri">Search</button></form>
+        <div class="gtopics" id="gutTopics">${GUT_TOPICS.map(([k, l]) => `<button data-t="${esc(k)}" class="${k === this.topic ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <div id="gutList"></div>
+        <p class="small muted" style="text-align:center;margin-top:18px">Books from <b>Project Gutenberg</b>: over 70,000 free ebooks whose US copyright has expired. Check your local copyright laws.</p>`;
+      $('#gutForm').onsubmit = e => { e.preventDefault(); $('#gutQ').blur(); this.q = $('#gutQ').value.trim(); if (this.q) { this.topic = ''; this.marks(); } this.load(true); };
+      $('#gutQ').oninput = e => { if (!e.target.value && this.q) { this.q = ''; this.load(true); } };
+      $$('#gutTopics [data-t]').forEach(b => b.onclick = () => { this.topic = b.dataset.t; this.q = ''; $('#gutQ').value = ''; this.marks(); this.load(true); });
+      this.load(true);
+    } else this.render();
+  },
+  marks() { $$('#gutTopics [data-t]').forEach(b => b.classList.toggle('on', b.dataset.t === this.topic && !this.q)); },
+  render() {
+    const el = $('#gutList'); if (!el) return;
+    const head = this.q ? `Results for “${esc(this.q)}”` : (GUT_TOPICS.find(t => t[0] === this.topic) || GUT_TOPICS[0])[1];
+    el.innerHTML = `<h2>${head}</h2>` +
+      this.list.map(b => `<div class="gbook" data-id="${b.id}">
+        <div class="gcov"><img loading="lazy" src="${this.cover(b.id)}" alt="" onerror="this.remove()"><span>${esc(b.title.slice(0, 40))}</span></div>
+        <div class="grow ginfo"><b>${esc(b.title)}</b><div class="small muted">${esc(b.author || 'Unknown author')}</div>
+          ${b.downloads ? `<div class="small muted">${b.downloads.toLocaleString()} downloads this month</div>` : ''}</div>
+        ${this.inLib.has('gutenberg:' + b.id) ? `<button class="btn sm" data-openlib="${b.id}">✓ Open</button>` : `<button class="btn pri sm" data-get="${b.id}">Get</button>`}
+      </div>`).join('') +
+      (this.loading ? `<div class="muted" style="text-align:center;padding:20px">Loading books…</div>` : '') +
+      (this.err ? `<div class="card" style="text-align:center"><div class="muted">${esc(this.err)}</div><button class="btn" id="gutRetry" style="margin-top:10px">Try again</button></div>` : '') +
+      (!this.loading && !this.err && !this.list.length ? `<div class="muted" style="text-align:center;padding:20px">No books found. Try a different search.</div>` : '') +
+      (this.more && !this.loading ? `<button class="btn block" id="gutMore" style="margin-top:10px">Show more</button>` : '');
+    $$('#gutList .gbook').forEach(r => r.onclick = e => { if (!e.target.closest('button')) this.detail(+r.dataset.id); });
+    $$('#gutList [data-get]').forEach(b => b.onclick = () => this.fetchBook(+b.dataset.get));
+    $$('#gutList [data-openlib]').forEach(b => b.onclick = () => this.openInLib(+b.dataset.openlib));
+    $('#gutMore') && ($('#gutMore').onclick = () => this.load(false));
+    $('#gutRetry') && ($('#gutRetry').onclick = () => this.load(this.list.length === 0));
+  },
+  detail(id) {
+    const b = this.list.find(x => x.id === id); if (!b) return;
+    const have = this.inLib.has('gutenberg:' + id);
+    openSheet(`<div class="row" style="align-items:flex-start;gap:14px"><div class="gcov big"><img src="${this.cover(id)}" alt="" onerror="this.remove()"><span>${esc(b.title.slice(0, 40))}</span></div>
+      <div class="grow"><h4 style="margin:0 0 4px">${esc(b.title)}</h4><div class="muted">${esc(b.author || 'Unknown author')}</div>
+      ${b.subjects.length ? `<div class="gsubj">${b.subjects.slice(0, 4).map(x => `<span>${esc(x.split(' -- ')[0])}</span>`).join('')}</div>` : ''}</div></div>
+      ${b.summary ? `<p class="muted" style="font-size:14px;line-height:1.5;max-height:40vh;overflow:auto">${esc(b.summary)}</p>` : ''}
+      <button class="btn pri block" id="gdGet" style="margin-top:12px">${have ? 'Open in my library' : '⬇️ Get this book (free)'}</button>`, sh => {
+      $('#gdGet', sh).onclick = () => { closeSheet(); have ? this.openInLib(id) : this.fetchBook(id); };
+    });
+  },
+  async openInLib(id) {
+    const m = (await DB.all('meta')).find(x => x.src === 'gutenberg:' + id);
+    if (m) { setTab('library'); openBook(m.id); }
+  },
+  async fetchBook(id) {
+    const b = this.list.find(x => x.id === id) || { title: 'Book ' + id, author: '' };
+    busy('Getting “' + b.title + '”', 'Downloading from Project Gutenberg…');
+    const tries = [['epub3.images', 'epub'], ['epub.images', 'epub'], ['epub.noimages', 'epub'], ['txt.utf-8', 'txt']];
+    let data = null, ext = 'epub', lastErr = null;
+    for (const [suffix, e] of tries) {
+      try { data = await this.get(`https://www.gutenberg.org/ebooks/${id}.${suffix}`, 90000); ext = e; if (data.length > 500) break; data = null; }
+      catch (err) { lastErr = err; }
+    }
+    if (!data) { busy(false); openSheet(`<h4>Couldn't download that book</h4><p class="muted">${esc(lastErr?.message || 'Project Gutenberg didn\'t send the file.')}</p><button class="btn block" onclick="closeSheet()">OK</button>`); return; }
+    $('#busyS') && ($('#busyS').textContent = 'Pulling out the story text…');
+    const safe = b.title.replace(/[^\w\s-]/g, '').trim().slice(0, 60) || 'book';
+    const newId = await importFile(new File([data], `${safe}.${ext}`), { src: 'gutenberg:' + id }, true);
+    if (newId) { this.inLib.add('gutenberg:' + id); currentTab = 'library'; $$('nav.tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'library')); toast('Added to your library'); }
+  },
 };
 
 /* ---------------- UI: book page ---------------- */

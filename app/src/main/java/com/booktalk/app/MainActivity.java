@@ -407,6 +407,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
                     o.put("type", "http").put("reqId", reqId);
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
                     c.setInstanceFollowRedirects(true);
+                    c.setRequestProperty("User-Agent", "BookTalk/" + appVersion() + " (Android ebook reader)");
                     c.setConnectTimeout(20000);
                     c.setReadTimeout(60000);
                     int code = c.getResponseCode();
