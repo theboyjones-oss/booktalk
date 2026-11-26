@@ -1096,8 +1096,8 @@ const Out = {
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   },
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
-  phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone, fx = '') {
-    text = sayText(text || '', tone);
+  phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone, fx = '', ready = false) {
+    text = ready ? (text || '') : sayText(text || '', tone);
     if ((fx || STV.is(voice) || PPV.is(voice)) && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx || ''); return; }
     if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
@@ -1181,7 +1181,7 @@ function sentenceSpans(t) {
   while ((m = re.exec(t))) {
     const end = m.index + m[0].length;
     if (m[1] && /\p{Ll}/u.test(t[end] || '')) continue;   // ‘Is anyone there?’ he called.
-    if (m[1] === '.' && /\b(mr|mrs|ms|dr|st|jr|sr|prof|rev|mt|gen|capt|lt|col|no|etc|vs|[a-z])$/i.test(t.slice(st, m.index).trim())) continue;
+    if (m[1] === '.' && /\b(mr|mrs|ms|dr|st|jr|sr|prof|rev|mt|gen|capt|lt|col|no|etc|vs|ch|chap|vol|vols|fig|pt|pp|ps|cf|al|approx|ave|rd|sq|sgt|cpl|maj|hon|esq|bros|co|inc|ltd|dept|jan|feb|aug|sept|oct|nov|dec|op|ed|viz|[a-z])$/i.test(t.slice(st, m.index).trim())) continue;
     if (/\p{L}|\d/u.test(t.slice(st, end))) { out.push([st, end]); st = end; }
   }
   if (st < t.length && /\p{L}|\d/u.test(t.slice(st))) out.push([st, t.length]);
@@ -1204,8 +1204,18 @@ function buildUnits(paras, max = MAX_UNIT) {
 
 /* ---------------- Make text easy to say: apostrophes, hyphens, dashes, quotes, symbols ---------------- */
 const ELISIONS = /^(em|tis|twas|cause|til|n|round|bout|ere|neath|cos|ow)$/i;
+const FRACS = { '½': 'a half', '¼': 'a quarter', '¾': 'three quarters', '⅓': 'a third', '⅔': 'two thirds', '⅛': 'an eighth', '⅜': 'three eighths', '⅝': 'five eighths', '⅞': 'seven eighths' };
+const ROMAN = /^[IVXLCDM]+$/;
+// A line written in capitals (titles, headings) reads as Title Case, so short words like THE or IN aren't spelled out
+function unshout(line) {
+  const letters = line.replace(/[^\p{L}]/gu, ''), up = letters.replace(/[^\p{Lu}]/gu, '').length;
+  if (letters.length < 6 || up / letters.length < 0.75) return line;
+  return line.replace(/\p{L}+/gu, w => w === 'I' || (ROMAN.test(w) && w.length <= 6 && w !== 'MIX' && w !== 'DIM') ? w : w[0] + w.slice(1).toLowerCase());
+}
 function speakable(t) {
   if (!t) return t;
+  t = t.replace(/(\d)\s*([½¼¾⅓⅔⅛⅜⅝⅞])/g, (m, d, f) => d + ' and ' + FRACS[f]).replace(/[½¼¾⅓⅔⅛⅜⅝⅞]/g, f => FRACS[f]);
+  t = t.split('\n').map(unshout).join('\n');
   t = t.normalize('NFKC')
     .replace(/[­​-‍⁠﻿]/g, '')                 // soft hyphens, zero-width characters
     .replace(/[‐‑‒¯]/g, '-')                         // odd hyphen characters
@@ -1240,12 +1250,13 @@ function speakable(t) {
     .replace(/(^|\n)\s*,\s*/g, '$1')
     .replace(/ +([.,!?;:])/g, '$1')
     .replace(/ *\n */g, '\n')
-    .replace(/,\s*(?=\n|$)/g, '...');                                     // trailing dash: "I was going to say—"
+    .replace(/,\s*(?=\n|$)/g, '...')                                      // trailing dash: "I was going to say—"
+    .replace(/(^|\n)\s*(?:\.\.\.\s*)+/g, '$1');                         // a sentence starting with "..." just starts
   return t.trim();
 }
 
 /* Change how sentences end so the voice itself sounds the part (the screen text is untouched) */
-const ABBR = /\b(mr|mrs|ms|dr|st|jr|sr|prof|rev|mt|gen|capt|lt|col|no|etc|vs|[a-z])$/i;
+const ABBR = /\b(mr|mrs|ms|dr|st|jr|sr|prof|rev|mt|gen|capt|lt|col|no|etc|vs|ch|chap|vol|vols|fig|pt|pp|ps|cf|al|approx|ave|rd|sq|sgt|cpl|maj|hon|esq|bros|co|inc|ltd|dept|jan|feb|aug|sept|oct|nov|dec|op|ed|viz|[a-z])$/i;
 function moodText(t, style) {
   if (!style || !t) return t;
   if (style === 'hush') t = t.replace(/,\s+/g, '... ');
@@ -2078,21 +2089,56 @@ const P = {
     const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24), sp = sentPause(this.meta);
     if (from > to) return;
     this.qSents = flush ? {} : (this.qSents || {});
+    this.qGroups = flush ? {} : (this.qGroups || {}); this.qLastK = flush ? {} : (this.qLastK || {});
     let first = flush;
     for (let i = from; i <= to; i++) {
       const un = this.units[i], base = 'q' + tok + '_' + i;
       if (un.scene) { this.qSents[i] = [[0, 0]]; Out.phoneSay(base + '_0', '', 1, 1, n.tts, Math.round(1000 * md.gap), first, md, fx); first = false; continue; }
-      // one utterance per sentence: the voice tells us exactly when each starts, so the highlight is exact
       const spans = this.qSents[i] = sentenceSpans(un.text), quoted = quoteFlags(un.text, spans);
+      // Plain phone voice: run sentences that sound the same together as one utterance, so the voice keeps its natural
+      // flow (no stop-start between sentences). It reports where it is (onRangeStart) and we light up that sentence.
+      // Sentences that need their own pitch (dialogue, ! and ?) or a set pause still get their own utterance.
+      const merge = !fx && !STV.is(n.tts) && !PPV.is(n.tts) && sp === 0 && !un.head;
+      let grp = null;
+      const flushGrp = () => {
+        if (!grp) return;
+        this.qGroups[i][grp.k] = grp.marks;
+        Out.phoneSay(base + '_' + grp.k, grp.text, grp.p, grp.r, n.tts, grp.last ? paraPause(120 * md.gap, this.meta) : 0, first, md, fx, true);
+        first = false; grp = null;
+      };
+      this.qGroups[i] = {}; this.qLastK[i] = spans.length - 1;
       spans.forEach(([a, b], k) => {
         const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k, i * 7 + k);
         const sx = un.text.slice(a, b).trim(), mute = silentRef(sx, md);
+        if (merge) {
+          if (mute) { if (last && grp) grp.last = true; else if (last) { Out.phoneSay(base + '_' + k, '', 1, 1, n.tts, paraPause(120 * md.gap, this.meta), first, md, fx, true); first = false; } return; }
+          const said = sayText(sx, md), pp = clamp(pitch * st.p, 0.5, 2), plain = Math.abs(st.p - 1) < 0.004 && !quoted[k];
+          if (grp && plain && grp.plain && grp.text.length + said.length < 600) { grp.marks.push([grp.text.length + 1, k]); grp.text += ' ' + said; }
+          else { flushGrp(); grp = { k, text: said, p: pp, r: clamp(rate * (plain ? 1 : st.r), 0.4, 2.5), plain, marks: [[0, k]] }; }
+          if (last) { grp.last = true; flushGrp(); }
+          return;
+        }
         Out.phoneSay(base + '_' + k, mute ? '' : sx, clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, mute ? 0 : (last ? paraPause((un.head ? 650 : 120) * md.gap, this.meta) : 0) + sp, first, md, fx);
         first = false;
       });
+      flushGrp();
     }
     if (flush) { this.curId = 'q' + tok + '_' + from; Sync.prepare(this.units[from], this.curId, rate); setStatus('reading'); }
     this.qEnd = to;
+  },
+  // If the voice doesn't report its position, step the highlight through a merged run by estimated timing
+  groupTimers(i, k) {
+    clearTimeout(this.gTimer); this.gCur = k;
+    const marks = this.qGroups?.[i]?.[k]; if (!marks || marks.length < 2 || this.gotRange) return;
+    const md = this.tone(), cps = 14.5 * clamp(S.speed * md.pace, 0.4, 2.5), t0 = performance.now();
+    const step = n => {
+      if (n >= marks.length) return;
+      this.gTimer = setTimeout(() => {
+        if (this.gotRange || !this.playing) return;
+        this.gCur = marks[n][1]; const sp = this.qSents[i][marks[n][1]]; if (sp) Sync.sentence(sp[0], sp[1]); step(n + 1);
+      }, Math.max(0, marks[n][0] / cps * 1000 - (performance.now() - t0)));
+    };
+    step(1);
   },
   phoneEvent(type, id, msg) {
     const m = /^q(\d+)_(\d+)(?:_(\d+))?$/.exec(id || ''); if (!m) return;
@@ -2111,9 +2157,17 @@ const P = {
       }
       const sp = this.qSents?.[i]?.[k];
       if (sp) Sync.sentence(sp[0], sp[1]);
+      this.groupTimers(i, k);
+    } else if (type === 'range') {
+      // inside a run of sentences spoken as one: light up the sentence the voice has reached
+      const marks = this.qGroups?.[i]?.[k]; if (!marks || uid !== this.curId) return;
+      this.gotRange = true; clearTimeout(this.gTimer);
+      let j = marks[0][1]; for (const [o, kk] of marks) if (msg >= o) j = kk;
+      if (j !== this.gCur) { this.gCur = j; const sp = this.qSents[i][j]; if (sp) Sync.sentence(sp[0], sp[1]); }
     } else if (type === 'done') {
-      const n = this.qSents?.[i]?.length || 1;
-      if (i >= this.units.length - 1 && k >= n - 1) { this.u = this.units.length - 1; this.nextChapter(true); }
+      const n = this.qLastK?.[i] ?? ((this.qSents?.[i]?.length || 1) - 1), marks = this.qGroups?.[i]?.[k];
+      const endK = marks ? marks[marks.length - 1][1] : k;
+      if (i >= this.units.length - 1 && endK >= n) { this.u = this.units.length - 1; this.nextChapter(true); }
     } else if (type === 'error') {
       this.errs = (this.errs || 0) + 1;
       if (this.errs >= 3) { this.errs = 0; this.pause(); toast('The voice keeps failing (' + (msg || 'unknown error') + '). Settings → Test AI voices shows more.', 6000); return; }
@@ -2225,7 +2279,7 @@ function onNative(ev) {
     case 'stinst': STV.onNative(ev); try { SLOW.ensure(); } catch {} break;
     case 'stdiag': if ($('#stDiagOut')) { $('#stDiagOut').textContent = ev.text; $('#sheet h4').textContent = '🩺 AI voice test'; $('#sheet').insertAdjacentHTML('beforeend', '<button class="btn block" id="stDiagCopy" style="margin-top:8px">Copy result</button>'); $('#stDiagCopy').onclick = async () => { try { await navigator.clipboard.writeText(ev.text); toast('Copied'); } catch { toast('Couldn\'t copy'); } }; } break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
-    case 'range': Sync.range(ev.id, ev.start); break;
+    case 'range': if (ev.id?.[0] === 'q') P.phoneEvent('range', ev.id, ev.start); else Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
     case 'media':
       if (ev.action === 'toggle') P.toggle();
