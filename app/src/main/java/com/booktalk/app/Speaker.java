@@ -459,6 +459,22 @@ public class Speaker {
      * then played back to back through one AudioTrack with the effects applied. */
     private PhoneRenderer renderer;
     private PhoneRenderer renderer() { if (renderer == null) renderer = new PhoneRenderer(ctx, "play"); return renderer; }
+
+    /* AI narrators (Supertonic): voices named "st:M1" or "st:M1=0.6,F2=0.4" */
+    private SupertonicEngine st;
+    void setSupertonic(SupertonicEngine e) { st = e; }
+    PhoneRenderer.Pcm renderAny(PhoneRenderer phone, String text, float pitch, float rate, String voice) throws Exception {
+        if (voice != null && voice.startsWith("st:")) {
+            if (st == null || !st.installed()) throw new IllegalStateException("The AI voices aren't downloaded");
+            // pitch without changing speed: speak at rate/pitch, then resample by pitch (raises/lowers pitch, restores speed)
+            float p = Math.max(0.5f, Math.min(2f, pitch));
+            short[] a = st.speak(text, voice.substring(3), Math.max(0.4f, Math.min(2.5f, rate / p)));
+            int sr = st.sampleRate();
+            return new PhoneRenderer.Pcm(Math.abs(p - 1f) < 0.005f ? a : PhoneRenderer.resample(a, Math.round(sr * p), sr), sr);
+        }
+        return phone.render(text, pitch, rate, voice);
+    }
+    PhoneRenderer.Renderer exportRouter() { PhoneRenderer ph = exportRenderer(); return (t, p, r, v) -> renderAny(ph, t, p, r, v); }
     private static final class RItem { String id, text, voice; float pitch, rate; int pauseMs; PhoneRenderer.Pcm pcm; String err; }
     private static final class Marker { final long frame; final String id; final char kind; final String msg; Marker(long f, String i, char k, String m) { frame = f; id = i; kind = k; msg = m; } }
     private static final class RSession {
@@ -490,7 +506,7 @@ public class Speaker {
                     RItem it = s.todo.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (it == null) continue;
                     if (it.text != null && !it.text.trim().isEmpty()) {
-                        try { it.pcm = renderer().render(it.text, it.pitch, it.rate, it.voice); }
+                        try { it.pcm = renderAny(renderer(), it.text, it.pitch, it.rate, it.voice); }
                         catch (Exception e) { it.err = String.valueOf(e.getMessage()); }
                     }
                     if (s.gen != gen) break;

@@ -51,26 +51,42 @@ for t in (0.25, 0.5, 0.75):
     w, d = tts(TEXT, 'en', blend(m, f, t), 8)
     sf.write(os.path.join(OUT, f'blend_{os.path.basename(m)[:-5]}_{os.path.basename(f)[:-5]}_{int(t*100)}.wav'), w[0], tts.sample_rate)
 
-# int8 (dynamic quantisation) of each part
+# int8 (dynamic quantisation): only MatMul/Gemm weights (depthwise convs can't run as ConvInteger)
 from onnxruntime.quantization import quantize_dynamic, QuantType
-q = os.path.join(OUT, 'int8'); os.makedirs(q, exist_ok=True)
-for n in ('duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx', 'vocoder.onnx'):
+def mel_dist(a, b):
+    import numpy as np
+    n = min(len(a), len(b)); a, b = a[:n], b[:n]
+    def spec(x):
+        f = np.lib.stride_tricks.sliding_window_view(x, 2048)[::512] * np.hanning(2048)
+        return np.log(np.abs(np.fft.rfft(f, axis=1)) + 1e-5)
+    A, B = spec(a), spec(b)
+    return float(np.mean(np.abs(A - B)))
+def same_noise(t, text, style, steps, seed=7):
+    np.random.seed(seed); w, d = t(text, 'en', style, steps); return w[0]
+ref = same_noise(tts, TEXT, style, 5)
+ref2 = same_noise(tts, TEXT, style, 5, seed=8)
+P(f'quality baseline: fp32 vs fp32 with different noise = {mel_dist(ref, ref2):.3f}  (lower = closer)')
+for label, parts in (('int8 all MatMul', ['duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx', 'vocoder.onnx']),
+                     ('int8 MatMul, fp32 vocoder', ['duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx'])):
+    q = os.path.join(OUT, label.replace(' ', '_').replace(',', '')); os.makedirs(q, exist_ok=True)
+    for n in ('duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx', 'vocoder.onnx', 'tts.json', 'unicode_indexer.json'):
+        subprocess.run(['cp', os.path.join(onnx, n), q])
+    for n in parts:
+        try:
+            quantize_dynamic(os.path.join(onnx, n), os.path.join(q, n), weight_type=QuantType.QInt8, op_types_to_quantize=['MatMul', 'Gemm'])
+        except Exception as e:
+            P('  quantise failed', n, e); subprocess.run(['cp', os.path.join(onnx, n), q])
+    sz = sum(os.path.getsize(os.path.join(q, n)) for n in os.listdir(q)) / 1e6
     try:
-        quantize_dynamic(os.path.join(onnx, n), os.path.join(q, n), weight_type=QuantType.QInt8)
-        P(f'int8 {n:26s} {os.path.getsize(os.path.join(q, n))/1e6:8.1f} MB')
+        tq = load(q)
+        bench(tq, style, 5, label)
+        w = same_noise(tq, TEXT, style, 5)
+        P(f'  {label}: total {sz:.0f} MB, difference from fp32 = {mel_dist(ref, w):.3f}')
+        sf.write(os.path.join(OUT, f'{label.replace(" ", "_").replace(",", "")}_M1.wav'), w, tq.sample_rate)
     except Exception as e:
-        P('int8 failed for', n, e); subprocess.run(['cp', os.path.join(onnx, n), os.path.join(q, n)])
-for n in ('tts.json', 'unicode_indexer.json'): subprocess.run(['cp', os.path.join(onnx, n), q])
-try:
-    tq = load(q)
-    for st in (5, 8): wq = bench(tq, style, st, 'int8 2 threads')
-    w, d = tq(TEXT, 'en', style, 8); sf.write(os.path.join(OUT, 'int8_' + os.path.basename(vs[0])[:-5] + '.wav'), w[0], tq.sample_rate)
-    # vector estimator int8, vocoder fp32 (vocoders often suffer most from int8)
-    mix = os.path.join(OUT, 'mix'); os.makedirs(mix, exist_ok=True)
-    for n in os.listdir(q): subprocess.run(['cp', os.path.join(q, n), mix])
-    subprocess.run(['cp', os.path.join(onnx, 'vocoder.onnx'), mix])
-    tm = load(mix); bench(tm, style, 5, 'int8 + fp32 vocoder')
-    w, d = tm(TEXT, 'en', style, 8); sf.write(os.path.join(OUT, 'int8fp32voc_' + os.path.basename(vs[0])[:-5] + '.wav'), w[0], tm.sample_rate)
-except Exception as e:
-    P('int8 run failed:', e)
+        P('  run failed:', label, e)
+sf.write(os.path.join(OUT, 'fp32_M1_steps5.wav'), ref, tts.sample_rate)
+for n in ('vector_estimator.onnx', 'vocoder.onnx', 'text_encoder.onnx', 'duration_predictor.onnx'):
+    for d in glob.glob(os.path.join(OUT, 'int8*')):
+        if os.path.isdir(d) and os.path.exists(os.path.join(d, n)): P(f'  {os.path.basename(d)}/{n}: {os.path.getsize(os.path.join(d, n))/1e6:.1f} MB')
 P('sample rate', tts.sample_rate)

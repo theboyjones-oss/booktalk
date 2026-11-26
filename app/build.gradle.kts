@@ -60,4 +60,5 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     // Unpacks the Kokoro voice pack (.tar.bz2) on the phone
     implementation("org.apache.commons:commons-compress:1.21")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 }

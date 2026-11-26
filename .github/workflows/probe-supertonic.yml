@@ -10,7 +10,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - name: Install
-        run: pip install onnxruntime==1.23.1 onnx numpy soundfile "huggingface_hub[cli]"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install onnxruntime==1.22.0 onnx numpy soundfile "huggingface_hub[cli]"
       - name: Download Supertonic 3 (archived, pinned)
         run: |
           python -c "from huggingface_hub import snapshot_download; snapshot_download('supertone-oss-archive/supertonic-3', revision='aafc6e32416a594460b32413efc49d7fe4ce6d46', local_dir='st')"
@@ -22,11 +24,11 @@ jobs:
           lscpu | grep -i "model name" >> out/results.txt
           cd out && for f in *.wav; do ffmpeg -loglevel error -y -i "$f" -b:a 96k "${f%.wav}.mp3"; done
           cp ../st/LICENSE LICENSE-supertonic3.txt 2>/dev/null || true
-          (cd int8 && tar czf ../supertonic3-int8.tar.gz .) || true
+          for d in int8_all_MatMul int8_MatMul_fp32_vocoder; do [ -d "$d" ] && (cd $d && tar czf ../st3-$d.tar.gz .); done; ls -la
           (cd ../st && tar czf ../out/voice_styles.tar.gz voice_styles)
       - name: Publish
         if: always()
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           cd out
-          gh release create "probe-st-${{ github.run_number }}" --prerelease --title "Supertonic probe ${{ github.run_number }}" --notes-file results.txt $(ls results.txt console.txt *.mp3 supertonic3-int8.tar.gz voice_styles.tar.gz LICENSE-supertonic3.txt 2>/dev/null)
+          gh release create "probe-st-${{ github.run_number }}" --prerelease --title "Supertonic probe ${{ github.run_number }}" --notes-file results.txt $(ls results.txt console.txt *.mp3 st3-*.tar.gz voice_styles.tar.gz LICENSE-supertonic3.txt 2>/dev/null)

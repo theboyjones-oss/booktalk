@@ -20,7 +20,10 @@ import java.util.concurrent.TimeUnit;
  * (so the Voice Tuner's sound effects work, and books can be saved as audio files).
  * Has its own TextToSpeech instance so it never interrupts live playback.
  */
-final class PhoneRenderer {
+final class PhoneRenderer implements PhoneRenderer.Renderer {
+    /** Anything that can turn text into audio for BookTalk to play or save. */
+    interface Renderer { Pcm render(String text, float pitch, float rate, String voice) throws Exception; }
+
     static final class Pcm {
         final short[] s; final int rate;
         Pcm(short[] s, int rate) { this.s = s; this.rate = rate; }
@@ -57,7 +60,8 @@ final class PhoneRenderer {
     }
 
     /** Render one passage (blocking). Throws if cancelled or the voice fails. */
-    synchronized Pcm render(String text, float pitch, float rate, String voice) throws Exception {
+    @Override
+    public synchronized Pcm render(String text, float pitch, float rate, String voice) throws Exception {
         if (!ready.await(15, TimeUnit.SECONDS) || !ok) throw new IllegalStateException("Phone voice isn't ready");
         tts.setPitch(pitch);
         tts.setSpeechRate(rate);

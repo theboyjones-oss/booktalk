@@ -50,6 +50,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
     private WebView webView;
     private Speaker speaker;
     private FrameLayout root;
+    private SupertonicEngine supertonic;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingMic;
     private final ExecutorService net = Executors.newFixedThreadPool(4);
@@ -84,6 +85,8 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         c.setAppearanceLightNavigationBars(false);
 
         speaker = new Speaker(this, this);
+        supertonic = new SupertonicEngine(this);
+        speaker.setSupertonic(supertonic);
         cache = new AudioCache(this);
         kokoro = new KokoroEngine(this, cache, speaker, new KokoroEngine.Events() {
             @Override public void tuning(boolean on) {
@@ -448,6 +451,25 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
             });
         }
 
+        /* ---------- AI narrators (Supertonic) ---------- */
+        @JavascriptInterface public boolean stSupported() { return true; }
+        @JavascriptInterface public boolean stInstalled() { return supertonic.installed(); }
+        @JavascriptInterface public boolean stInstalling() { return supertonic.installing(); }
+        @JavascriptInterface public float stSpeedX() { return supertonic.speedX(); }
+        @JavascriptInterface public int stSteps() { return supertonic.steps(); }
+        @JavascriptInterface public void stSetSteps(int n) { supertonic.setQuality(n); }
+        @JavascriptInterface public void stUninstall() { new Thread(supertonic::uninstall).start(); }
+        @JavascriptInterface
+        public void stInstall(String filesJson) {
+            try {
+                supertonic.install(new org.json.JSONArray(filesJson), (stage, pct, msg) -> {
+                    try { emit(new JSONObject().put("type", "stinst").put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
+                });
+            } catch (JSONException e) {
+                try { emit(new JSONObject().put("type", "stinst").put("stage", "error").put("pct", 0).put("msg", e.getMessage())); } catch (JSONException ignored) { }
+            }
+        }
+
         /** Is the phone itself in dark mode? (for the "Match phone" theme) */
         @JavascriptInterface
         public boolean systemDark() {
@@ -490,7 +512,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
                 JSONObject o = new JSONObject();
                 try {
                     o.put("type", "export").put("reqId", reqId);
-                    String where = AudiobookExporter.exportPhone(MainActivity.this, speaker.exportRenderer(), book, name, new org.json.JSONArray(itemsJson), fxJson, (done, total) -> {
+                    String where = AudiobookExporter.exportPhone(MainActivity.this, speaker.exportRouter(), book, name, new org.json.JSONArray(itemsJson), fxJson, (done, total) -> {
                         try { emit(new JSONObject().put("type", "expprog").put("reqId", reqId).put("done", done).put("total", total)); } catch (JSONException ignored) { }
                     });
                     o.put("ok", true).put("where", where);
