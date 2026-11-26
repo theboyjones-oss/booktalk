@@ -350,7 +350,7 @@ nav.tabs button{font-size:11px}
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
-    <div class="emorow"><span>🔊 Echo</span><input type="range" id="echoR" min="0" max="100" step="5"><output id="echoO"></output></div>
+    <div class="emorow"><span>🐇 Speed</span><input type="range" id="spdR" min="0" max="100" step="1"><output id="spdO"></output></div>
     <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="pauseR" min="0" max="100" step="1"><output id="pauseO"></output></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
@@ -1411,9 +1411,14 @@ const pauseV = meta => meta?.pause ?? 50;
 const paraPause = (base, meta) => { const v = pauseV(meta); return Math.round(v <= 50 ? base * v / 50 : base + (v - 50) * 20); };
 const sentPause = meta => Math.max(0, (pauseV(meta) - 50) * 16);
 const pauseLabel = v => v === 50 ? 'Normal' : v < 15 ? 'Minimal' : v < 50 ? 'Shorter' : v <= 80 ? 'Longer' : 'Very long';
+// Per-book speed slider (0–100, 50 = normal): 0 = half speed, 100 = double speed
+const speedV = meta => meta?.spd ?? 50;
+const speedF = meta => Math.pow(2, (speedV(meta) - 50) / 50);
+const speedLabel = v => v === 50 ? 'Normal' : Math.pow(2, (v - 50) / 50).toFixed(2).replace(/0$/, '') + '×';
 const echoLabel = v => v <= 0 ? 'None' : v <= 20 ? 'Light' : v <= 50 ? 'Room' : v <= 80 ? 'Hall' : 'Cathedral';
 function bookTone(nar, meta) {
-  let t = withEcho(toneFor(nar, meta?.mood, meta?.emo ?? 100), meta?.echo);
+  let t = toneFor(nar, meta?.mood, meta?.emo ?? 100);
+  const sf = speedF(meta); if (sf !== 1) t = { ...t, pace: t.pace * sf };
   return meta?.skipRefs ? { ...t, refs: true, tag: (t.tag || '') + 'r' } : t;
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
@@ -1967,6 +1972,10 @@ const P = {
   async changePause(v) {
     this.meta.pause = v; await DB.put('meta', this.meta);
     renderPlayerMeta(); if (this.playing) this.restartUnit();
+  },
+  async changeSpeed(v) {
+    this.meta.spd = v; await DB.put('meta', this.meta);
+    renderPlayerMeta(); renderProgress?.(); if (this.playing) this.restartUnit();
   },
   async changeEcho(v) {
     this.meta.echo = v; await DB.put('meta', this.meta);
@@ -3119,7 +3128,7 @@ async function openBook(id) {
       <button class="btn">Change</button>
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
-    <div class="emorow"><span>🔊 Echo</span><input type="range" id="bkEcho" min="0" max="100" step="5" value="${m.echo ?? voiceEcho(Narr.forBook(m))}"><output id="bkEchoO">${echoLabel(m.echo ?? voiceEcho(Narr.forBook(m)))}</output></div>
+    <div class="emorow"><span>🐇 Speed</span><input type="range" id="bkSpd" min="0" max="100" step="1" value="${speedV(m)}"><output id="bkSpdO">${speedLabel(speedV(m))}</output></div>
     <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="bkPause" min="0" max="100" step="1" value="${pauseV(m)}"><output id="bkPauseO">${pauseLabel(pauseV(m))}</output></div>
     <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
@@ -3139,11 +3148,10 @@ async function openBook(id) {
     m.pause = +e.target.value; await DB.put('meta', m);
     if (P.meta?.id === id) { P.meta.pause = m.pause; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
   };
-  $('#bkEcho').oninput = e => { $('#bkEchoO').textContent = echoLabel(+e.target.value); };
-  $('#bkEcho').onchange = async e => {
-    m.echo = +e.target.value; await DB.put('meta', m);
-    if (P.meta?.id === id) { P.meta.echo = m.echo; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
-    else Preview.run(Narr.forBook(m).id, null, m.mood, null, m.emo ?? 100, m.echo);
+  $('#bkSpd').oninput = e => { $('#bkSpdO').textContent = speedLabel(+e.target.value); };
+  $('#bkSpd').onchange = async e => {
+    m.spd = +e.target.value; await DB.put('meta', m);
+    if (P.meta?.id === id) { P.meta.spd = m.spd; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
   };
   $('#bkEmo').oninput = e => { $('#bkEmoO').textContent = emoLabel(+e.target.value); };
   $('#bkEmo').onchange = async e => {
@@ -3251,8 +3259,8 @@ $('#reader').addEventListener('click', e => { const p = e.target.closest('p[data
 const emoLabel = v => v == 0 ? 'Flat' : v < 60 ? 'Subtle' : v < 100 ? 'Gentle' : v == 100 ? 'Normal' : v < 150 ? 'Lively' : v < 200 ? 'Dramatic' : 'Theatrical';
 $('#emoR').oninput = e => { $('#emoO').textContent = emoLabel(+e.target.value); };
 $('#emoR').onchange = e => P.changeEmo(+e.target.value);
-$('#echoR').oninput = e => { $('#echoO').textContent = echoLabel(+e.target.value); };
-$('#echoR').onchange = e => P.changeEcho(+e.target.value);
+$('#spdR').oninput = e => { $('#spdO').textContent = speedLabel(+e.target.value); };
+$('#spdR').onchange = e => P.changeSpeed(+e.target.value);
 $('#pauseR').oninput = e => { $('#pauseO').textContent = pauseLabel(+e.target.value); };
 $('#pauseR').onchange = e => P.changePause(+e.target.value);
 function renderPlayerMeta() {
@@ -3262,7 +3270,7 @@ function renderPlayerMeta() {
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
   { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
-  { const v = P.meta.echo ?? voiceEcho(P.narrator()); $('#echoR').value = v; $('#echoO').textContent = echoLabel(v); }
+  { const v = speedV(P.meta); $('#spdR').value = v; $('#spdO').textContent = speedLabel(v); }
   { const v = pauseV(P.meta); $('#pauseR').value = v; $('#pauseO').textContent = pauseLabel(v); }
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
