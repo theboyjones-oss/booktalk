@@ -9,7 +9,10 @@ jobs:
           UA="BookTalk/6 (Android ebook reader; +https://github.com/theboyjones-oss/booktalk)"
           for n in 10 30 8300 1581 8001; do
             echo "================= PG $n"
-            curl -sSL -A "$UA" -o b$n.html "https://www.gutenberg.org/cache/epub/$n/pg$n-images.html" || echo "html fail"
+            d=$(python3 -c "n='$n'; print('/'.join(n[:-1]) + '/' + n if len(n)>1 else '0/'+n)")
+            for u in "https://www.mirrorservice.org/sites/ftp.ibiblio.org/pub/docs/books/gutenberg/$d/$n-h/$n-h.htm" "https://aleph.gutenberg.org/$d/$n-h/$n-h.htm" "https://gutenberg.pglaf.org/$d/$n-h/$n-h.htm" "https://www.mirrorservice.org/sites/ftp.ibiblio.org/pub/docs/books/gutenberg/$d/$n-0.txt" "https://www.mirrorservice.org/sites/ftp.ibiblio.org/pub/docs/books/gutenberg/$d/$n.txt"; do
+              if curl -sSLf -A "$UA" -o b$n.html "$u"; then echo "GOT $u"; break; fi
+            done
             python3 - "$n" <<'PY'
           import re,sys,html
           n=sys.argv[1]; s=open(f'b{n}.html',encoding='utf8',errors='replace').read()
