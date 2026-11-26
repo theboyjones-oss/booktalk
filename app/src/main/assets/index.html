@@ -1892,7 +1892,7 @@ const P = {
       if (i >= this.units.length - 1 && k >= n - 1) { this.u = this.units.length - 1; this.nextChapter(true); }
     } else if (type === 'error') {
       this.errs = (this.errs || 0) + 1;
-      if (this.errs >= 3) { this.errs = 0; this.pause(); toast('The phone voice keeps failing (' + (msg || 'unknown error') + '). Try another voice, or check it\'s downloaded.', 5000); return; }
+      if (this.errs >= 3) { this.errs = 0; this.pause(); toast('The voice keeps failing (' + (msg || 'unknown error') + '). Settings → Test AI voices shows more.', 6000); return; }
       this.u = i; this.advance();
     }
   },
@@ -1998,6 +1998,7 @@ function onNative(ev) {
     case 'expprog': Maker.onProg(ev); break;
     case 'uimode': applyTheme(); break;
     case 'stinst': STV.onNative(ev); break;
+    case 'stdiag': if ($('#stDiagOut')) { $('#stDiagOut').textContent = ev.text; $('#sheet h4').textContent = '🩺 AI voice test'; $('#sheet').insertAdjacentHTML('beforeend', '<button class="btn block" id="stDiagCopy" style="margin-top:8px">Copy result</button>'); $('#stDiagCopy').onclick = async () => { try { await navigator.clipboard.writeText(ev.text); toast('Copied'); } catch { toast('Couldn\'t copy'); } }; } break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
@@ -3230,6 +3231,7 @@ function renderSettings() {
       <div class="tl" style="margin:6px 0 6px">Voice quality</div>
       <div class="tseg" id="sStQ" style="grid-template-columns:repeat(3,1fr)">${[[4, '⚡ Fast'], [5, 'Balanced'], [8, '✨ Best']].map(([n, l]) => `<button data-q="${n}" class="${NATIVE.stSteps() === n ? 'on' : ''}">${l}</button>`).join('')}</div>
       <div class="small muted" style="margin-top:6px">Best sounds slightly smoother but takes longer to make. Use Fast if you ever hear pauses.</div>
+      <button class="btn" id="sStTest" style="margin-top:10px">🩺 Test AI voices</button>
       <button class="btn ghost" id="sStDel" style="margin-top:10px">Remove AI voices (frees about ${STV.SIZE_MB} MB)</button></div>` : '<div class="stcardwrap"></div>'}` : ''}
     <h2>Appearance</h2>
     <div class="tseg" id="sTheme" style="margin-bottom:4px;grid-template-columns:repeat(3,1fr)">${[['auto', '📱 Match phone'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([k, l]) => `<button data-th="${k}" class="${LS.get('theme', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -3252,6 +3254,10 @@ function renderSettings() {
   $('#sHl').onclick = e => { S.hlSentence = S.hlSentence === false; saveSettings(); e.currentTarget.classList.toggle('on', S.hlSentence); if (!S.hlSentence) $$('#reader span.cs').forEach(w => w.classList.remove('cs')); };
   $$('#sTheme [data-th]').forEach(b => b.onclick = () => { LS.set('theme', b.dataset.th); applyTheme(); $$('#sTheme [data-th]').forEach(x => x.classList.toggle('on', x === b)); });
   $$('#sStQ [data-q]').forEach(b => b.onclick = () => { NATIVE.stSetSteps(+b.dataset.q); $$('#sStQ [data-q]').forEach(x => x.classList.toggle('on', x === b)); toast('Voice quality: ' + b.textContent.replace(/[⚡✨] /, '')); });
+  $('#sStTest') && ($('#sStTest').onclick = () => {
+    openSheet(`<h4>🩺 Testing the AI voices…</h4><p class="muted" id="stDiagOut" style="white-space:pre-wrap;font-size:12px;font-family:monospace">Running the test. This takes a few seconds…</p>`);
+    NATIVE.stDiagnose?.('d' + uid());
+  });
   $('#sStDel') && ($('#sStDel').onclick = () => openSheet(`<h4>Remove the AI voices?</h4><p class="muted" style="margin-top:0">Books using them will switch to a phone voice. You can download them again any time.</p><div class="row" style="gap:10px"><button class="btn grow" onclick="closeSheet()">Keep</button><button class="btn grow" id="stDelYes" style="background:#5a1f1f;color:#fff">Remove</button></div>`, sh => $('#stDelYes', sh).onclick = () => { NATIVE.stUninstall(); closeSheet(); setTimeout(renderSettings, 400); toast('AI voices removed'); }));
   STV.paint();
   $('#sKeepOn').onclick = e => { S.keepOn = S.keepOn === false; saveSettings(); e.currentTarget.classList.toggle('on', S.keepOn); screenOn(); };

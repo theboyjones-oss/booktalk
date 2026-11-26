@@ -366,6 +366,27 @@ final class SupertonicEngine {
         return out;
     }
 
+    /** Settings → Test AI voices: try every step and report exactly what fails. */
+    synchronized String diagnose() {
+        StringBuilder r = new StringBuilder();
+        r.append("Files: ").append(installed() ? "all present" : "MISSING").append('\n');
+        for (String p : PARTS) { File f = new File(dir, p); r.append("  ").append(p).append(": ").append(f.isFile() ? (f.length() / 1000000) + " MB" : "missing").append('\n'); }
+        try { r.append("ONNX Runtime: ").append(ai.onnxruntime.OrtEnvironment.getEnvironment().getVersion()).append('\n'); }
+        catch (Throwable e) { r.append("ONNX Runtime failed to load: ").append(e).append('\n'); return r.toString(); }
+        try { close(); load(threads()); r.append("Model loaded (").append(threads()).append(" threads, ").append(sampleRate).append(" Hz)\n"); }
+        catch (Throwable e) { r.append("Model failed to load: ").append(e).append('\n'); return r.toString(); }
+        try {
+            long t0 = System.nanoTime();
+            short[] a = speak("This is a test of the AI voice.", "M1", 1f);
+            double secs = (System.nanoTime() - t0) / 1e9, audio = a.length / (double) sampleRate;
+            r.append("Speech made: ").append(String.format(java.util.Locale.UK, "%.1f s of audio in %.1f s (%.1fx real time)", audio, secs, audio / Math.max(0.01, secs))).append('\n');
+        } catch (Throwable e) {
+            r.append("Speaking failed: ").append(e).append('\n');
+            for (StackTraceElement s : e.getStackTrace()) { if (r.length() > 3000) break; r.append("  at ").append(s).append('\n'); }
+        }
+        return r.toString();
+    }
+
     /* ---------------- speed check ---------------- */
 
     /** Try a few thread counts once and keep the fastest. Records how many times faster than real time it runs. */

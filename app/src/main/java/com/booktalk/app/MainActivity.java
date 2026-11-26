@@ -453,6 +453,14 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
 
         /* ---------- AI narrators (Supertonic) ---------- */
         @JavascriptInterface public boolean stSupported() { return true; }
+        @JavascriptInterface
+        public void stDiagnose(String reqId) {
+            new Thread(() -> {
+                String out;
+                try { out = supertonic.diagnose(); } catch (Throwable e) { out = "Test failed: " + e; }
+                try { emit(new JSONObject().put("type", "stdiag").put("reqId", reqId).put("text", out)); } catch (JSONException ignored) { }
+            }, "st-diag").start();
+        }
         @JavascriptInterface public boolean stInstalled() { return supertonic.installed(); }
         @JavascriptInterface public boolean stInstalling() { return supertonic.installing(); }
         @JavascriptInterface public float stSpeedX() { return supertonic.speedX(); }
