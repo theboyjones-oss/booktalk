@@ -349,7 +349,6 @@ nav.tabs button{font-size:11px}
       <button class="iconbtn" id="cNext" title="Forward"><svg viewBox="0 0 24 24"><path d="m4 18 8.5-6L4 6zm9-12v12l8.5-6z"/></svg></button>
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
-    <div id="moodRow"></div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
@@ -1304,7 +1303,7 @@ const NMOODS = [
   { id: 'serious', name: 'Serious', icon: '🧐', temp: 0.3,  pitch: 0.94, pace: 0.94, gap: 1.2, style: 'level' },
   { id: 'spooky',  name: 'Spooky',  icon: '👻', temp: 0.6,  pitch: 0.86, pace: 0.80, gap: 2.0, style: 'hush' },
 ];
-const moodOf = id => NMOODS.find(m => m.id === id) || NMOODS[0];
+const moodOf = () => NMOODS[0];   // mood buttons were removed in 5.4; everything reads as Normal
 const moodButtons = (cur, attr = 'data-mood') => NMOODS.map(m => `<button class="mb ${m.id === cur ? 'on' : ''}" ${attr}="${m.id}"><span>${m.icon}</span>${m.name}</button>`).join('');
 
 /* ---------------- Voice Tuner: the maths behind custom voices ---------------- */
@@ -2399,7 +2398,7 @@ const Maker = {
     const hours = meta.words / 155 / 60;
     openSheet(`<h4>Save as audiobook</h4>
       <p class="small muted" style="margin-top:0">Makes the whole book and saves it as audio files, one per chapter, in <b>Music/BookTalk/${esc(AudioName(meta.title))}</b>. They play in any music or podcast app and can be copied anywhere.</p>
-      <div class="card"><b>🗣️ ${esc(n.name)}</b> <span class="small muted">· ${esc(n.desc)} · ${moodOf(meta.mood).icon} ${moodOf(meta.mood).name}</span>
+      <div class="card"><b>🗣️ ${esc(n.name)}</b> <span class="small muted">· ${esc(n.desc)}</span>
         <div class="small muted" style="margin-top:6px">${plan.length} chapters · about ${hours >= 1 ? hours.toFixed(1) + ' hours' : Math.round(hours * 60) + ' min'} of audio${done ? ` · ${Math.round(done / Math.max(1, units) * 100)}% already made` : ''}</div></div>
       <p class="small muted">${isPhone ? `Made on this phone, much faster than real time. A long book still takes a while, so keep BookTalk open and the phone on charge.${n.tune && Pro.usesStudio(n.tune) && !Pro.on ? ' Sound effects are only included with Voice Tuner Pro.' : ''}` : 'Free, made on this phone. A whole book takes hours, so start it with the phone on charge (overnight is ideal).'} To use a different narrator or mood, change it on the book page first.</p>
       <button class="btn pri block" id="mkGo">${LS.get('make.' + meta.id, null) ? 'Continue' : 'Start'}</button>`, sh => {
@@ -2590,7 +2589,7 @@ const Prep = {
     const ready = this.readyMins(), j = this.job, running = j && j.state === 'running';
     openSheet(`<h4>Get audio ready</h4>
       <p class="muted" style="margin-top:0">BookTalk makes the narration on this phone. Getting it ready in advance means it plays smoothly with no pauses. It carries on with the screen off; plugging in the charger is a good idea.</p>
-      <div class="card small" style="margin-bottom:12px">From where you are: <b>${ready ? this.fmt(ready) + ' ready' : 'nothing ready yet'}</b> with ${esc(P.narrator().name)} (${P.mood().name}).</div>
+      <div class="card small" style="margin-bottom:12px">From where you are: <b>${ready ? this.fmt(ready) + ' ready' : 'nothing ready yet'}</b> with ${esc(P.narrator().name)}.</div>
       ${running ? `<div class="small prepStatus" style="margin-bottom:8px"></div><div class="prog" style="margin-bottom:14px"><i class="prepBar"></i></div><button class="btn ghost block" id="pgStop">Stop</button>` : `
       <button class="btn pri block" data-prep="1h" style="margin-bottom:8px">⬇️ Get the next hour ready</button>
       <div class="row"><button class="btn grow" data-prep="2h">Next 2 hours</button><button class="btn grow" data-prep="chapter">Rest of chapter</button><button class="btn grow" data-prep="book">Whole book</button></div>`}
@@ -2937,8 +2936,6 @@ async function openBook(id) {
       <div class="grow"><div class="small muted">Narrator</div><b>${esc(Narr.forBook(m).name)}</b> <span class="small muted">· ${esc(Narr.forBook(m).desc)}</span></div>
       <button class="btn">Change</button>
     </div>
-    <label class="f">Mood <span style="font-weight:400">· how ${esc(Narr.forBook(m).name)} sounds</span></label>
-    <div class="moodrow" id="bkMood">${moodButtons(moodOf(m.mood).id)}</div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
     <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
@@ -3065,9 +3062,7 @@ function renderPlayerMeta() {
   const inc = P.included();
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
-  $('#moodRow').innerHTML = moodButtons(P.mood().id);
   { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
-  $$('#moodRow [data-mood]').forEach(b => b.onclick = () => P.changeMood(b.dataset.mood));
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
   if (!P.playing) setStatus('');
@@ -3181,7 +3176,7 @@ function renderNarrators() {
       <div class="grow"><b>${v.emoji} ${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">Made from ${esc(v.baseName)}</div>
         <div class="row" style="gap:14px;margin-top:4px"><button class="small" data-tedit="${esc(v.id)}" style="color:var(--ac2)">🎛️ Tune</button><button class="small" data-tshare="${esc(v.id)}" style="color:var(--ac2)">Share</button></div></div>
       <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : ''}
-    <label class="f">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>
+
     ${STV.on() ? `<div class="sect"><b>🤖 AI narrators</b><div class="small muted">Natural voices made on your phone, faster than real time.</div></div>` + (STV.installed() ? STV.list().map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
       <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}</div>
@@ -3213,7 +3208,6 @@ function renderNarrators() {
   $$('#narrList [data-tedit]').forEach(b => b.onclick = () => Tuner.open({ edit: b.dataset.tedit }));
   $$('#narrList [data-tshare]').forEach(b => b.onclick = () => shareVoice(b.dataset.tshare));
   $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b, previewMood));
-  $$('#nvMood [data-mood]').forEach(b => b.onclick = () => { previewMood = b.dataset.mood; $$('#nvMood [data-mood]').forEach(x => x.classList.toggle('on', x === b)); });
   $$('#narrList [data-use]').forEach(b => b.onclick = async () => {
     const id = b.dataset.use; b.textContent = '…';
     try { await Narr.ensure(id); } catch (e) { toast('Couldn\'t get that voice. Check your internet connection.'); renderNarrators(); return; }
