@@ -1511,10 +1511,10 @@ const Phone = {
 const ST_REV = 'aafc6e32416a594460b32413efc49d7fe4ce6d46';
 const ST_BASE = `https://huggingface.co/supertone-oss-archive/supertonic-3/resolve/${ST_REV}/`;
 const ST_VOICES = [
-  ['M1', 'Arthur', 'Warm, steady male narrator'], ['M2', 'Ben', 'Relaxed male voice'], ['M3', 'Callum', 'Bright, clear male voice'],
-  ['M4', 'Daniel', 'Deep, calm male voice'], ['M5', 'Elliot', 'Lively male voice'],
-  ['F1', 'Alice', 'Warm, friendly female narrator'], ['F2', 'Bella', 'Soft, gentle female voice'], ['F3', 'Clara', 'Clear, confident female voice'],
-  ['F4', 'Daisy', 'Bright, youthful female voice'], ['F5', 'Eve', 'Rich, expressive female voice'],
+  ['M1', 'Arthur', 'Warm, natural male narrator'], ['M2', 'Ben', 'Deep, relaxed male voice'], ['M3', 'Callum', 'Brisk, clear male voice'],
+  ['M4', 'Daniel', 'Soft, mellow male voice'], ['M5', 'Edward', 'Very deep, steady male voice'],
+  ['F1', 'Alice', 'Warm, expressive female narrator'], ['F2', 'Bella', 'Gentle, expressive female voice'], ['F3', 'Clara', 'Crisp, clear female voice'],
+  ['F4', 'Daisy', 'Bright, quick female voice'], ['F5', 'Eve', 'Calm, mature female voice'],
 ];
 const STV = {
   on: () => !!NATIVE?.stSupported?.(),
@@ -1988,7 +1988,7 @@ const Tuner = {
           <div class="grow"><input id="tuName" maxlength="40" placeholder="Name your voice" value="${esc(d.name || '')}"></div>
           <button class="iconbtn" id="tuDice" title="Random name">🎲</button>
         </div>
-        <div class="row" style="margin-top:10px"><div class="grow small muted">Made from <b style="color:var(--tx)">${esc(b.name)}</b> · ${phone ? 'phone voice' : 'AI narrator'}</div><button class="btn sm" id="tuBase">Change</button></div>
+        <div class="row" style="margin-top:10px"><div class="grow small muted">Made from <b style="color:var(--tx)">${esc(b.name)}</b> · ${b.ai ? 'AI voice' : phone ? 'phone voice' : 'AI narrator'}</div><button class="btn sm" id="tuBase">Change</button></div>
       </div>
 
       ${b.ai ? `<h2>Voice Blender</h2>
@@ -3133,6 +3133,12 @@ function renderSettings() {
     <button class="btn ghost block" id="sMoreVoices" style="margin-top:10px">Get more phone voices</button>
     ${AI ? `<h2>AI narrator voice pack</h2>
     <div class="card"><div class="pocketInst"></div>${NATIVE && Pocket.refresh() ? '<button class="btn ghost" id="sPackDel" style="margin-top:10px">Remove (frees about 195 MB)</button>' : ''}</div>` : ''}
+    ${STV.on() ? `<h2>AI narrators</h2>${STV.installed() ? `<div class="card">
+      <div class="set" style="padding-top:0"><div class="grow">Speed on this phone<div class="small muted">${NATIVE.stSpeedX() > 0 ? `Makes speech about <b>${NATIVE.stSpeedX().toFixed(1)}×</b> faster than it's read` : 'Measured the first time an AI voice reads'}</div></div></div>
+      <div class="tl" style="margin:6px 0 6px">Voice quality</div>
+      <div class="tseg" id="sStQ" style="grid-template-columns:repeat(3,1fr)">${[[4, '⚡ Fast'], [5, 'Balanced'], [8, '✨ Best']].map(([n, l]) => `<button data-q="${n}" class="${NATIVE.stSteps() === n ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">Best sounds slightly smoother but takes longer to make. Use Fast if you ever hear pauses.</div>
+      <button class="btn ghost" id="sStDel" style="margin-top:10px">Remove AI voices (frees about ${STV.SIZE_MB} MB)</button></div>` : '<div class="stcardwrap"></div>'}` : ''}
     <h2>Appearance</h2>
     <div class="tseg" id="sTheme" style="margin-bottom:4px;grid-template-columns:repeat(3,1fr)">${[['auto', '📱 Match phone'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([k, l]) => `<button data-th="${k}" class="${LS.get('theme', 'auto') === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <h2>Reading</h2>
@@ -3153,6 +3159,9 @@ function renderSettings() {
   $('#sMoreVoices').onclick = () => Phone.moreVoices();
   $('#sHl').onclick = e => { S.hlSentence = S.hlSentence === false; saveSettings(); e.currentTarget.classList.toggle('on', S.hlSentence); if (!S.hlSentence) $$('#reader span.cs').forEach(w => w.classList.remove('cs')); };
   $$('#sTheme [data-th]').forEach(b => b.onclick = () => { LS.set('theme', b.dataset.th); applyTheme(); $$('#sTheme [data-th]').forEach(x => x.classList.toggle('on', x === b)); });
+  $$('#sStQ [data-q]').forEach(b => b.onclick = () => { NATIVE.stSetSteps(+b.dataset.q); $$('#sStQ [data-q]').forEach(x => x.classList.toggle('on', x === b)); toast('Voice quality: ' + b.textContent.replace(/[⚡✨] /, '')); });
+  $('#sStDel') && ($('#sStDel').onclick = () => openSheet(`<h4>Remove the AI voices?</h4><p class="muted" style="margin-top:0">Books using them will switch to a phone voice. You can download them again any time.</p><div class="row" style="gap:10px"><button class="btn grow" onclick="closeSheet()">Keep</button><button class="btn grow" id="stDelYes" style="background:#5a1f1f;color:#fff">Remove</button></div>`, sh => $('#stDelYes', sh).onclick = () => { NATIVE.stUninstall(); closeSheet(); setTimeout(renderSettings, 400); toast('AI voices removed'); }));
+  STV.paint();
   $('#sKeepOn').onclick = e => { S.keepOn = S.keepOn === false; saveSettings(); e.currentTarget.classList.toggle('on', S.keepOn); screenOn(); };
   $('#sPro').onclick = () => Pro.on ? toast('Voice Tuner Pro is unlocked 🎉') : Pro.sheet();
   // hidden test switch: tap the version 7 times
