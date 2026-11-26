@@ -52,7 +52,7 @@ public class AudiobookExporter {
     public interface Progress { void at(int done, int total); }
 
     /** Phone voices: items [{"t": text, "p": pitch, "r": rate, "v": voice, "gap": ms}], rendered one by one. */
-    public static String exportPhone(Context ctx, PhoneRenderer.Renderer rend, String book, String name, JSONArray items, String fxJson, Progress prog) throws Exception {
+    public static String exportPhone(Context ctx, VoiceRenderer rend, String book, String name, JSONArray items, String fxJson, Progress prog) throws Exception {
         final int[] idx = {0};
         Source src = () -> {
             if (idx[0] >= items.length()) return null;

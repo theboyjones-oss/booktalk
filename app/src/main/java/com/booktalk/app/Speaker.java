@@ -474,7 +474,7 @@ public class Speaker {
         }
         return phone.render(text, pitch, rate, voice);
     }
-    PhoneRenderer.Renderer exportRouter() { PhoneRenderer ph = exportRenderer(); return (t, p, r, v) -> renderAny(ph, t, p, r, v); }
+    VoiceRenderer exportRouter() { PhoneRenderer ph = exportRenderer(); return (t, p, r, v) -> renderAny(ph, t, p, r, v); }
     private static final class RItem { String id, text, voice; float pitch, rate; int pauseMs; PhoneRenderer.Pcm pcm; String err; }
     private static final class Marker { final long frame; final String id; final char kind; final String msg; Marker(long f, String i, char k, String m) { frame = f; id = i; kind = k; msg = m; } }
     private static final class RSession {

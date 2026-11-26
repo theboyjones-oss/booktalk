@@ -265,6 +265,10 @@ nav.tabs button{font-size:11px}
 .emorow{display:grid;grid-template-columns:auto 1fr 4.6em;align-items:center;gap:10px;margin:8px 2px 2px;font-size:13px;font-weight:600;color:var(--tx2)}
 .emorow input{padding:0;border:0;background:none;accent-color:var(--ac);width:100%}
 .emorow output{font-size:12px;color:var(--ac2);text-align:right}
+
+.stcard{margin-bottom:12px;background:linear-gradient(135deg,rgba(90,140,255,.16),rgba(255,138,92,.14));border:1px solid rgba(120,150,255,.4)}
+.stbar{height:8px;border-radius:4px;background:var(--s3);overflow:hidden;margin-top:12px} .stbar i{display:block;height:100%;background:linear-gradient(90deg,#6f8cff,var(--ac))}
+.stmsg{margin-top:6px}
 </style>
 </head>
 <body>
@@ -1090,7 +1094,7 @@ const Out = {
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
   phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone, fx = '') {
     text = sayText(text || '', tone);
-    if (fx && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx); return; }
+    if ((fx || STV.is(voice)) && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx || ''); return; }
     if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
     const u = new SpeechSynthesisUtterance(text || ' ');
@@ -1368,6 +1372,14 @@ function quoteFlags(text, spans) {
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
 function setFx(tone) { if (NATIVE?.setFx) NATIVE.setFx(fxJson(tone)); }
+// Voice Blender: {M1: 60, F2: 40} → "M1=0.60,F2=0.40" (a mix of AI voices), or '' for none
+function blendSpec(t) {
+  const b = Object.entries(t?.blend || {}).filter(([k, v]) => v > 0 && ST_VOICES.some(x => x[0] === k));
+  if (!b.length) return '';
+  if (b.length === 1) return b[0][0];
+  const sum = b.reduce((a, [, v]) => a + v, 0);
+  return b.map(([k, v]) => `${k}=${(v / sum).toFixed(2)}`).join(',');
+}
 const toneKey = (text, nar, tone) => Pocket.key(text, nar.voice, tone.temp, tone.tag);
 
 // Saved custom voices
@@ -1495,21 +1507,78 @@ const Phone = {
   best() { const l = this.list(); return (l.find(v => !v.network) || l[0] || { id: 'tts:' }).id; },
   moreVoices() { if (NATIVE?.openVoiceSettings) NATIVE.openVoiceSettings(); else toast('Add voices in your phone\'s Text-to-speech settings'); },
 };
+/* ---------------- AI narrators: Supertonic 3, made on the phone, faster than real time ---------------- */
+const ST_REV = 'aafc6e32416a594460b32413efc49d7fe4ce6d46';
+const ST_BASE = `https://huggingface.co/supertone-oss-archive/supertonic-3/resolve/${ST_REV}/`;
+const ST_VOICES = [
+  ['M1', 'Arthur', 'Warm, steady male narrator'], ['M2', 'Ben', 'Relaxed male voice'], ['M3', 'Callum', 'Bright, clear male voice'],
+  ['M4', 'Daniel', 'Deep, calm male voice'], ['M5', 'Elliot', 'Lively male voice'],
+  ['F1', 'Alice', 'Warm, friendly female narrator'], ['F2', 'Bella', 'Soft, gentle female voice'], ['F3', 'Clara', 'Clear, confident female voice'],
+  ['F4', 'Daisy', 'Bright, youthful female voice'], ['F5', 'Eve', 'Rich, expressive female voice'],
+];
+const STV = {
+  on: () => !!NATIVE?.stSupported?.(),
+  is: id => typeof id === 'string' && id.startsWith('st:'),
+  installed: () => !!NATIVE?.stInstalled?.(),
+  installing: () => !!NATIVE?.stInstalling?.(),
+  SIZE_MB: 400,
+  files() {
+    const f = [['onnx/duration_predictor.onnx', 3.7], ['onnx/text_encoder.onnx', 36.4], ['onnx/vector_estimator.onnx', 256.5], ['onnx/vocoder.onnx', 101.4],
+      ['onnx/tts.json', 0.01], ['onnx/unicode_indexer.json', 0.3]].map(([p, mb]) => ({ url: ST_BASE + p, path: p.replace('onnx/', ''), size: Math.round(mb * 1e6) }));
+    for (const [c] of ST_VOICES) f.push({ url: ST_BASE + 'voice_styles/' + c + '.json', path: 'voice_styles/' + c + '.json', size: 292000 });
+    return f;
+  },
+  get(id) {
+    const code = String(id).slice(3), v = ST_VOICES.find(x => x[0] === code) || ST_VOICES[0];
+    return { id: 'st:' + v[0], tts: 'st:' + v[0], code: v[0], name: v[1], desc: v[2] + ' · AI', phone: true, ai: true };
+  },
+  list() { return ST_VOICES.map(v => this.get('st:' + v[0])); },
+  state: { stage: '', pct: 0, msg: '' },
+  install() {
+    if (!NATIVE?.stInstall) { toast('Update BookTalk to get the AI voices'); return; }
+    this.state = { stage: 'download', pct: 0, msg: '' }; this.paint();
+    NATIVE.stInstall(JSON.stringify(this.files()));
+  },
+  onNative(ev) {
+    this.state = ev; this.paint();
+    if (ev.stage === 'done') { toast('AI voices are ready 🎉'); if ($('#narrList')?.offsetParent) renderNarrators(); if (currentTab === 'settings') renderSettings(); }
+    if (ev.stage === 'error') toast('AI voice download stopped: ' + (ev.msg || 'error') + '. Tap Download to carry on.', 5000);
+  },
+  card() {
+    if (this.installed()) return '';
+    const s = this.state, busy = this.installing() || (s.stage && s.stage !== 'error' && s.stage !== 'done');
+    return `<div class="card stcard"><div class="row"><div style="font-size:30px">🤖</div><div class="grow"><b>AI narrators</b><div class="small muted">10 natural voices made on your phone, much faster than real time. One download of about ${this.SIZE_MB} MB, so use Wi-Fi.</div></div></div>
+      ${busy ? `<div class="stbar"><i style="width:${s.pct || 1}%"></i></div><div class="small muted stmsg">${s.stage === 'tune' || s.stage === 'check' ? esc(s.msg) : 'Downloading… ' + (s.pct || 0) + '%'}</div>`
+             : `<button class="btn pri block stget" style="margin-top:10px">⬇️ Download AI voices</button>`}</div>`;
+  },
+  paint() {
+    $$('.stcardwrap').forEach(el => { el.innerHTML = this.card(); $('.stget', el)?.addEventListener('click', () => this.install()); });
+  },
+  // the AI voices need downloading before first use
+  need() {
+    if (this.installed()) return false;
+    openSheet(`<h4>Download the AI voices?</h4><p class="muted" style="margin-top:0">They're made right on your phone, free and offline once downloaded. It's about ${this.SIZE_MB} MB, so Wi-Fi is best.</p><div class="stcardwrap"></div>`, () => this.paint());
+    return true;
+  },
+};
+
 const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
 const Narr = {
-  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (AI && PRESETS.some(x => x[0] === id)); },
+  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (STV.is(id) && STV.on()) || (AI && PRESETS.some(x => x[0] === id)); },
   get(id) {
     if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : AI ? PRESETS[0][0] : Phone.best();
-    if (CV.is(id)) { const c = CV.get(id), b = this.get(c.base); return { ...b, id: c.id, name: c.name, emoji: c.emoji || '🎛️', desc: 'Your voice · made from ' + b.name, custom: true, base: b.id, baseName: b.name, tune: c.tune }; }
+    if (CV.is(id)) { const c = CV.get(id), b = this.get(c.base), spec = b.ai ? blendSpec(c.tune) : ''; return { ...b, id: c.id, name: c.name, emoji: c.emoji || '🎛️', desc: 'Your voice · made from ' + (spec ? 'a blend of AI voices' : b.name), custom: true, base: b.id, baseName: spec ? 'a blend of AI voices' : b.name, tune: c.tune, tts: spec ? 'st:' + spec : b.tts }; }
+    if (STV.is(id)) return STV.get(id);
     if (Phone.is(id)) return Phone.get(id);
     const p = PRESETS.find(x => x[0] === id); return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] };
   },
   forBook(meta) { return this.get(meta && this.valid(meta.narrator) ? meta.narrator : S.narrator); },
-  has(id) { if (CV.is(id)) return this.has(this.get(id).base); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
+  has(id) { if (CV.is(id)) return this.has(this.get(id).base); if (STV.is(id)) return STV.installed(); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
   loading: new Map(),
   // Make sure the narrator's sample is on the phone (downloads ~1 MB the first time)
   ensure(id) {
     if (CV.is(id)) return this.ensure(this.get(id).base);
+    if (STV.is(id)) return STV.installed() ? Promise.resolve(true) : (STV.need(), Promise.reject(new Error('The AI voices need downloading first')));
     if (this.has(id)) return Promise.resolve(true);
     if (this.loading.has(id)) return this.loading.get(id);
     const n = this.get(id);
@@ -1552,7 +1621,11 @@ const Narr = {
     } catch (e) { toast('Couldn\'t load the sample: ' + (e.message || e)); this.stopSample(); }
   },
   // The one place to choose a narrator. onPick(id) is called once their voice is on the phone.
-  aiRows(current) { return `      <div class="sect" style="margin-top:14px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>
+  aiRows(current, pickAttr) {
+    if (pickAttr) return STV.list().map(v => `<div class="opt ${v.id === current ? 'on' : ''}" style="padding:8px 2px">
+        <button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button>
+        <button class="grow" ${pickAttr}="${esc(v.id)}" style="text-align:left;padding:6px 4px"><b>${esc(v.name)}${v.id === current ? ' ✓' : ''}</b><div class="small muted">${esc(v.desc)}</div></button></div>`).join('');
+    return `      <div class="sect" style="margin-top:14px"><b>🎙️ AI narrators</b><div class="small muted">More lifelike, made on your phone. May pause on slower phones unless you get audio ready first.</div></div>
       ${PRESETS.map(([id, n, d, path]) => `<div class="opt ${id === current ? 'on' : ''}" style="padding:8px 2px">
         <button class="iconbtn" data-hear="${path}" style="width:40px;height:40px">${ICON.play}</button>
         <button class="grow" data-pick="${id}" style="text-align:left;padding:6px 4px"><b>${n}${id === current ? ' ✓' : ''}</b><div class="small muted">${d}</div></button></div>`).join('')}
@@ -1570,17 +1643,22 @@ const Narr = {
       ${noCustom ? '' : `<button class="btn block tunerbtn" data-tuner style="margin-bottom:6px">🎛️ ${current && !CV.is(current) ? 'Tune this voice in the Voice Tuner' : 'Open the Voice Tuner'}</button>`}
       ${mine}
       ${AI ? `<div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>` : (noCustom || !CV.all().length ? '' : `<div class="sect"><b>📱 Phone voices</b></div>`)}
+      ${STV.on() ? `<div class="sect"><b>🤖 AI narrators</b><div class="small muted">Natural voices made on your phone.</div></div>${STV.installed() ? this.aiRows(current, 'data-pick') : '<div class="stcardwrap"></div>'}` : ''}
+      ${STV.on() ? `<div class="sect" style="margin-top:12px"><b>📱 Phone voices</b></div>` : ''}
       ${this.phoneRows(current, 'data-pick')}
       <button class="btn ghost block" data-more style="margin:6px 0 4px">Get more phone voices</button>
       ${AI ? this.aiRows(current) : ''}`, sh => {
       $$('[data-hear]', sh).forEach(b => b.onclick = () => this.hear(b, b.dataset.hear));
       $$('[data-phear]', sh).forEach(b => b.onclick = () => this.hearPhone(b, b.dataset.phear));
       $('[data-more]', sh).onclick = () => Phone.moreVoices();
+      STV.paint();
       $('[data-tuner]', sh) && ($('[data-tuner]', sh).onclick = () => { this.stopSample(); CV.is(current) ? Tuner.open({ edit: current }) : Tuner.open({ base: current }); });
       $$('[data-tedit]', sh).forEach(b => b.onclick = () => { this.stopSample(); Tuner.open({ edit: b.dataset.tedit }); });
       $$('[data-pick]', sh).forEach(b => b.onclick = async () => {
         this.stopSample();
-        if (Phone.is(b.dataset.pick) || (CV.is(b.dataset.pick) && this.get(b.dataset.pick).phone)) { closeSheet(); onPick(b.dataset.pick); return; }
+        const pv = this.get(b.dataset.pick);
+        if (pv.ai && !STV.installed()) { STV.need(); return; }
+        if (Phone.is(b.dataset.pick) || pv.phone) { closeSheet(); onPick(b.dataset.pick); return; }
         const id = b.dataset.pick, label = b.querySelector('b');
         label.textContent = this.get(id).name + ' · getting voice…';
         try { await this.ensure(id); closeSheet(); onPick(id); }
@@ -1643,6 +1721,7 @@ const P = {
   async play() {
     if (!this.meta) return;
     const n = this.narrator();
+    if (n.ai && !STV.installed()) { STV.need(); return; }
     if (n.phone) {
       this.playing = true; renderPlayState();
       Out.session(true, true, this.meta.title, this.chapterTitle());
@@ -1835,6 +1914,7 @@ function onNative(ev) {
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'expprog': Maker.onProg(ev); break;
     case 'uimode': applyTheme(); break;
+    case 'stinst': STV.onNative(ev); break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
     case 'tuning': if (ev.on) { toast('Getting the narrator ready for this phone (one time, about 20 seconds)…', 8000); setStatus('loading'); } else toast('All set. Speech should now flow smoothly.'); break;
@@ -1895,7 +1975,7 @@ const Tuner = {
   },
   close() { this.stop(); $('#tuner').classList.remove('on'); if (currentTab === 'voices') renderNarrators(); },
   isOpen() { return $('#tuner').classList.contains('on'); },
-  draft() { const b = Narr.get(this.d.base); return { ...b, id: this.d.id || 'draft', base: b.id, tune: this.d.tune, custom: true }; },
+  draft() { const b = Narr.get(this.d.base), spec = b.ai ? blendSpec(this.d.tune) : ''; return { ...b, id: this.d.id || 'draft', base: b.id, tune: this.d.tune, custom: true, tts: spec ? 'st:' + spec : b.tts }; },
   baseNar() { return Narr.get(this.d.base); },
   stop() { clearTimeout(this.timer); if (Preview.id) { Out.stop(); Preview.done(); } },
   render() {
@@ -1910,6 +1990,13 @@ const Tuner = {
         </div>
         <div class="row" style="margin-top:10px"><div class="grow small muted">Made from <b style="color:var(--tx)">${esc(b.name)}</b> · ${phone ? 'phone voice' : 'AI narrator'}</div><button class="btn sm" id="tuBase">Change</button></div>
       </div>
+
+      ${b.ai ? `<h2>Voice Blender</h2>
+      <div class="tcard">
+        <div class="small muted" style="margin-bottom:6px">Mix the AI voices to make a brand-new one. Leave them all at 0 to use ${esc(b.name)} as it is.</div>
+        ${ST_VOICES.map(([c, nm]) => slider('blend.' + c, nm + ' <span class="small muted">' + (c[0] === 'M' ? '♂' : '♀') + '</span>', 0, 100, 5, t.blend?.[c] || 0)).join('')}
+        <div class="row" style="gap:8px;margin-top:8px"><button class="btn sm grow" id="tuBlendRand">🎲 Random blend</button><button class="btn sm" id="tuBlendClear">Clear</button></div>
+      </div>` : ''}
 
       <div class="tcard tlisten">
         <textarea id="tuText" rows="3">${esc(this.text)}</textarea>
@@ -1974,6 +2061,7 @@ const Tuner = {
       warmth: sign(t.warmth), clarity: sign(t.clarity), room: t.room + '%',
     };
     EMO.forEach(e => lab['emo.' + e.id] = sign(t.emo[e.id] || 0));
+    ST_VOICES.forEach(([c]) => lab['blend.' + c] = (t.blend?.[c] || 0) + '%');
     $$('#tunerBody [data-o]').forEach(o => { o.textContent = lab[o.dataset.o] ?? ''; });
     const pct = v => Math.round((v - 1) * 100), meter = (label, v, lo, hi, txt) => {
       const f = clamp((v - lo) / (hi - lo), 0, 1);
@@ -1996,12 +2084,14 @@ const Tuner = {
   },
   set(k, v) {
     const t = this.d.tune;
-    if (k.startsWith('emo.')) t.emo[k.slice(4)] = v; else t[k] = v;
+    if (k.startsWith('emo.')) t.emo[k.slice(4)] = v;
+    else if (k.startsWith('blend.')) { t.blend = t.blend || {}; t.blend[k.slice(6)] = v; }
+    else t[k] = v;
     this.readouts(); this.changed();
   },
   syncSliders() {
     const t = this.d.tune;
-    $$('#tunerBody input[type=range][data-k]').forEach(i => { const k = i.dataset.k; i.value = k.startsWith('emo.') ? t.emo[k.slice(4)] || 0 : t[k]; });
+    $$('#tunerBody input[type=range][data-k]').forEach(i => { const k = i.dataset.k; i.value = k.startsWith('emo.') ? t.emo[k.slice(4)] || 0 : k.startsWith('blend.') ? t.blend?.[k.slice(6)] || 0 : t[k]; });
     $$('#tuPause button').forEach(b => b.classList.toggle('on', +b.dataset.sp === (t.spause ?? 1)));
     $$('.tfx button').forEach(b => b.classList.toggle('on', b.dataset.fx === t.effect));
     this.readouts(); this.padDraw();
@@ -2023,6 +2113,7 @@ const Tuner = {
     t.pitch = Math.round(r(-5, 5) * 2) / 2; t.speed = +r(0.85, 1.2).toFixed(2); t.live = +r(-0.2, 0.4).toFixed(2);
     t.gap = +r(0.7, 1.6).toFixed(1); t.spause = Math.floor(r(0, 4));
     if (!this.baseNar().phone) { t.warmth = Math.round(r(-30, 70) / 5) * 5; t.clarity = Math.round(r(-20, 50) / 5) * 5; t.room = Math.random() < 0.4 ? Math.round(r(10, 60) / 5) * 5 : 0; if (Math.random() < 0.3) t.effect = FX_LIST[1 + Math.floor(Math.random() * (FX_LIST.length - 1))].id; }
+    if (this.baseNar().ai) { const pick = [...ST_VOICES].sort(() => Math.random() - 0.5).slice(0, 2); t.blend = Object.fromEntries(pick.map(([c]) => [c, 30 + Math.round(Math.random() * 14) * 5])); }
     this.d.tune = t;
     if (!this.d.id && !$('#tuName').value.trim()) this.randomName();
     this.syncSliders(); this.changed();
@@ -2067,6 +2158,13 @@ const Tuner = {
     pad.onpointerdown = ev => { pad.setPointerCapture(ev.pointerId); this.stop(); move(ev); pad.onpointermove = move; };
     pad.onpointerup = pad.onpointercancel = () => { pad.onpointermove = null; this.changed(); };
     $('#tuStudioPro') && ($('#tuStudioPro').onclick = () => Pro.sheet('studio'));
+    $('#tuBlendRand') && ($('#tuBlendRand').onclick = () => {
+      const pick = [...ST_VOICES].sort(() => Math.random() - 0.5).slice(0, 2 + Math.floor(Math.random() * 2));
+      d.tune.blend = Object.fromEntries(pick.map(([c]) => [c, 20 + Math.round(Math.random() * 16) * 5]));
+      if (!d.id && !$('#tuName').value.trim()) this.randomName();
+      this.syncSliders(); this.changed();
+    });
+    $('#tuBlendClear') && ($('#tuBlendClear').onclick = () => { d.tune.blend = {}; this.syncSliders(); this.changed(); });
     $('#tuSave').onclick = () => this.save(false);
     $('#tuCopy') && ($('#tuCopy').onclick = () => this.save(true));
     $('#tuShare') && ($('#tuShare').onclick = () => shareVoice(d.id));
@@ -2136,8 +2234,9 @@ const Preview = {
     this.onEnd = onEnd || null;
     const id = this.id = 'pv' + uid();
     this.btn = btn; this.icon = icon || null;
+    if (n.ai && !STV.installed()) { this.done(); STV.need(); return; }
     if (n.phone) {
-      if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = 'Playing…'; }
+      if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = n.ai ? 'Making…' : 'Playing…'; }
       const spans = sentenceSpans(text), q = quoteFlags(text, spans), rate = clamp(S.speed * md.pace, 0.4, 2.5);
       spans.forEach(([a, b], i) => {
         const st = sentenceTone(text.slice(a, b), q[i], md.k, i), sid = i === spans.length - 1 ? id : id + 's' + i;
@@ -2956,6 +3055,11 @@ function renderNarrators() {
         <div class="row" style="gap:14px;margin-top:4px"><button class="small" data-tedit="${esc(v.id)}" style="color:var(--ac2)">🎛️ Tune</button><button class="small" data-tshare="${esc(v.id)}" style="color:var(--ac2)">Share</button></div></div>
       <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : ''}
     <label class="f">Hear them read in this mood</label><div class="moodrow" id="nvMood">${moodButtons(previewMood)}</div>
+    ${STV.on() ? `<div class="sect"><b>🤖 AI narrators</b><div class="small muted">Natural voices made on your phone, faster than real time.</div></div>` + (STV.installed() ? STV.list().map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
+      <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
+      <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}</div>
+        <button class="small" data-read="${esc(v.id)}" style="color:var(--ac2);margin-top:4px">Hear it read</button></div>
+      <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : '<div class="stcardwrap"></div>') : ''}
     <div class="sect"><b>📱 Phone voices</b><div class="small muted">Your phone's own voices: start instantly and read with no pauses. Use “Get more phone voices” to add accents.</div></div>` +
     (phone.length ? phone : [Phone.get('tts:')]).map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
@@ -2971,6 +3075,7 @@ function renderNarrators() {
       <button class="btn ${id === cur ? 'pri' : ''}" data-use="${id}">${id === cur ? '✓' : 'Use'}</button></div>`).join('') +
     `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`);
   $$('#narrList .pocketInst').forEach(el => renderPocketInstall(el));
+  STV.paint();
   $$('#narrList [data-hear]').forEach(b => b.onclick = () => Narr.hear(b, b.dataset.hear));
   $$('#narrList [data-phear]').forEach(b => b.onclick = () => Narr.hearPhone(b, b.dataset.phear));
   $('#nvMore').onclick = () => Phone.moreVoices();

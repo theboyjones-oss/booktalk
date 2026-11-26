@@ -79,7 +79,7 @@ final class SupertonicEngine {
                     JSONObject f = files.getJSONObject(i);
                     File out = new File(dir, f.getString("path"));
                     long size = f.optLong("size", 0);
-                    if (out.isFile() && size > 0 && out.length() == size) { done += size; continue; }
+                    if (out.isFile() && out.length() > 0) { done += Math.max(1, size); continue; }   // already have it (files are only renamed into place once complete)
                     out.getParentFile().mkdirs();
                     File tmp = new File(out.getPath() + ".part");
                     final long base = done, tot = total;
