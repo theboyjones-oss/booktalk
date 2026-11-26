@@ -349,7 +349,7 @@ nav.tabs button{font-size:11px}
       <button class="iconbtn" id="cNext" title="Forward"><svg viewBox="0 0 24 24"><path d="m4 18 8.5-6L4 6zm9-12v12l8.5-6z"/></svg></button>
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
-    <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
+    <div class="emorow"><span>🎵 Pitch</span><input type="range" id="pitR" min="0" max="100" step="1"><output id="pitO"></output></div>
     <div class="emorow"><span>🐇 Speed</span><input type="range" id="spdR" min="0" max="100" step="1"><output id="spdO"></output></div>
     <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="pauseR" min="0" max="100" step="1"><output id="pauseO"></output></div>
     <div class="chips">
@@ -1415,10 +1415,15 @@ const pauseLabel = v => v === 50 ? 'Normal' : v < 15 ? 'Minimal' : v < 50 ? 'Sho
 const speedV = meta => meta?.spd ?? 50;
 const speedF = meta => Math.pow(2, (speedV(meta) - 50) / 50);
 const speedLabel = v => v === 50 ? 'Normal' : Math.pow(2, (v - 50) / 50).toFixed(2).replace(/0$/, '') + '×';
+// Per-book pitch slider (0–100, 50 = the voice's normal pitch): ±6 semitones at the ends
+const pitchV = meta => meta?.pit ?? 50;
+const pitchF = meta => Math.pow(2, (pitchV(meta) - 50) * 0.12 / 12);
+const pitchLabel = v => v === 50 ? 'Normal' : (v > 50 ? 'Higher +' : 'Lower −') + Math.abs((v - 50) * 0.12).toFixed(1);
 const echoLabel = v => v <= 0 ? 'None' : v <= 20 ? 'Light' : v <= 50 ? 'Room' : v <= 80 ? 'Hall' : 'Cathedral';
 function bookTone(nar, meta) {
-  let t = toneFor(nar, meta?.mood, meta?.emo ?? 100);
+  let t = toneFor(nar, meta?.mood, 100);
   const sf = speedF(meta); if (sf !== 1) t = { ...t, pace: t.pace * sf };
+  const pf = pitchF(meta); if (pf !== 1) t = { ...t, pitch: clamp(t.pitch * pf, 0.5, 2), phonePitch: clamp(t.phonePitch * pf, 0.5, 2) };
   return meta?.skipRefs ? { ...t, refs: true, tag: (t.tag || '') + 'r' } : t;
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
@@ -1971,6 +1976,10 @@ const P = {
   isPhone() { return !!this.narrator().phone; },
   async changePause(v) {
     this.meta.pause = v; await DB.put('meta', this.meta);
+    renderPlayerMeta(); if (this.playing) this.restartUnit();
+  },
+  async changePitch(v) {
+    this.meta.pit = v; await DB.put('meta', this.meta);
     renderPlayerMeta(); if (this.playing) this.restartUnit();
   },
   async changeSpeed(v) {
@@ -3127,7 +3136,7 @@ async function openBook(id) {
       <div class="grow"><div class="small muted">Narrator</div><b>${esc(Narr.forBook(m).name)}</b> <span class="small muted">· ${esc(Narr.forBook(m).desc)}</span></div>
       <button class="btn">Change</button>
     </div>
-    <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
+    <div class="emorow"><span>🎵 Pitch</span><input type="range" id="bkPit" min="0" max="100" step="1" value="${pitchV(m)}"><output id="bkPitO">${pitchLabel(pitchV(m))}</output></div>
     <div class="emorow"><span>🐇 Speed</span><input type="range" id="bkSpd" min="0" max="100" step="1" value="${speedV(m)}"><output id="bkSpdO">${speedLabel(speedV(m))}</output></div>
     <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="bkPause" min="0" max="100" step="1" value="${pauseV(m)}"><output id="bkPauseO">${pauseLabel(pauseV(m))}</output></div>
     <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
@@ -3153,11 +3162,10 @@ async function openBook(id) {
     m.spd = +e.target.value; await DB.put('meta', m);
     if (P.meta?.id === id) { P.meta.spd = m.spd; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
   };
-  $('#bkEmo').oninput = e => { $('#bkEmoO').textContent = emoLabel(+e.target.value); };
-  $('#bkEmo').onchange = async e => {
-    m.emo = +e.target.value; await DB.put('meta', m);
-    if (P.meta?.id === id) await P.changeEmo(m.emo);
-    Preview.run(Narr.forBook(m).id, null, m.mood, null, m.emo);
+  $('#bkPit').oninput = e => { $('#bkPitO').textContent = pitchLabel(+e.target.value); };
+  $('#bkPit').onchange = async e => {
+    m.pit = +e.target.value; await DB.put('meta', m);
+    if (P.meta?.id === id) { P.meta.pit = m.pit; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
   };
   $$('#bkMood [data-mood]').forEach(b => b.onclick = async () => {
     m.mood = b.dataset.mood; await DB.put('meta', m);
@@ -3257,8 +3265,8 @@ function renderReader() {
 }
 $('#reader').addEventListener('click', e => { const p = e.target.closest('p[data-i]'); if (p) P.jumpPara(+p.dataset.i); });
 const emoLabel = v => v == 0 ? 'Flat' : v < 60 ? 'Subtle' : v < 100 ? 'Gentle' : v == 100 ? 'Normal' : v < 150 ? 'Lively' : v < 200 ? 'Dramatic' : 'Theatrical';
-$('#emoR').oninput = e => { $('#emoO').textContent = emoLabel(+e.target.value); };
-$('#emoR').onchange = e => P.changeEmo(+e.target.value);
+$('#pitR').oninput = e => { $('#pitO').textContent = pitchLabel(+e.target.value); };
+$('#pitR').onchange = e => P.changePitch(+e.target.value);
 $('#spdR').oninput = e => { $('#spdO').textContent = speedLabel(+e.target.value); };
 $('#spdR').onchange = e => P.changeSpeed(+e.target.value);
 $('#pauseR').oninput = e => { $('#pauseO').textContent = pauseLabel(+e.target.value); };
@@ -3269,7 +3277,7 @@ function renderPlayerMeta() {
   const inc = P.included();
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
-  { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
+  { const v = pitchV(P.meta); $('#pitR').value = v; $('#pitO').textContent = pitchLabel(v); }
   { const v = speedV(P.meta); $('#spdR').value = v; $('#spdO').textContent = speedLabel(v); }
   { const v = pauseV(P.meta); $('#pauseR').value = v; $('#pauseO').textContent = pauseLabel(v); }
   $('#chSpeed').textContent = S.speed + '×';
