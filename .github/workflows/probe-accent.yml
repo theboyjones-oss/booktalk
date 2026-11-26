@@ -1,0 +1,28 @@
+name: Probe accents
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install onnxruntime==1.22.0 numpy soundfile faster-whisper "huggingface_hub[cli]"
+      - name: Download Supertonic 3 (archived, pinned)
+        run: python -c "from huggingface_hub import snapshot_download; snapshot_download('supertone-oss-archive/supertonic-3', revision='aafc6e32416a594460b32413efc49d7fe4ce6d46', local_dir='st')"
+      - name: Probe
+        run: |
+          mkdir -p out
+          python tools/stprobe/accent.py st out 2>&1 | tee out/console.txt || true
+          cd out && for f in *.wav; do ffmpeg -loglevel error -y -i "$f" -b:a 96k "${f%.wav}.mp3"; done
+      - name: Publish
+        if: always()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          cd out
+          gh release create "probe-accent-${{ github.run_number }}" --prerelease --title "Accent probe ${{ github.run_number }}" --notes-file accents.txt $(ls accents.txt console.txt *.mp3 2>/dev/null)
