@@ -262,7 +262,7 @@ a{color:var(--ac2)}
 .gsubj{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px} .gsubj span{font-size:11px;background:var(--s2);border-radius:999px;padding:3px 8px;color:var(--tx2)}
 nav.tabs button{font-size:11px}
 
-.emorow{display:grid;grid-template-columns:auto 1fr 4.6em;align-items:center;gap:10px;margin:8px 2px 2px;font-size:13px;font-weight:600;color:var(--tx2)}
+.emorow{display:grid;grid-template-columns:6.8em 1fr 4.6em;align-items:center;gap:10px;margin:8px 2px 2px;font-size:13px;font-weight:600;color:var(--tx2)}
 .emorow input{padding:0;border:0;background:none;accent-color:var(--ac);width:100%}
 .emorow output{font-size:12px;color:var(--ac2);text-align:right}
 
@@ -350,6 +350,7 @@ nav.tabs button{font-size:11px}
       <button class="iconbtn" id="cNextCh" title="Next chapter"><svg viewBox="0 0 24 24"><path d="m6 18 8.5-6L6 6zM16 6v12h2V6z"/></svg></button>
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
+    <div class="emorow"><span>🔊 Echo</span><input type="range" id="echoR" min="0" max="100" step="5"><output id="echoO"></output></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
       <button class="chip" id="chSpeed"></button>
@@ -1393,8 +1394,18 @@ function quoteFlags(text, spans) {
   }
   return spans.map(([a, b]) => { let n = 0, m = 0; for (let i = a; i < b; i++) if (/\S/.test(text[i])) { m++; if (inq[i]) n++; } return m > 0 && n / m > 0.5; });
 }
+// Echo slider (any voice): 0 = dry, 100 = big hall. Unset = whatever the voice was made with.
+const voiceEcho = nar => Math.round(nar?.tune?.room || 0);
+function withEcho(t, echo) {
+  if (echo == null) return t;
+  const fx = { warmth: 0, clarity: 0, effect: 'none', ...(t.fx || {}), room: echo };
+  return { ...t, fx, echo };
+}
+// What the sound studio should do. Echo works for everyone; the other studio effects need Pro.
+const fxFor = t => Pro.on ? fxJson(t) : (t?.echo ? JSON.stringify({ room: t.echo }) : '');
+const echoLabel = v => v <= 0 ? 'None' : v <= 20 ? 'Light' : v <= 50 ? 'Room' : v <= 80 ? 'Hall' : 'Cathedral';
 function bookTone(nar, meta) {
-  const t = toneFor(nar, meta?.mood, meta?.emo ?? 100);
+  let t = withEcho(toneFor(nar, meta?.mood, meta?.emo ?? 100), meta?.echo);
   return meta?.skipRefs ? { ...t, refs: true, tag: (t.tag || '') + 'r' } : t;
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
@@ -1428,7 +1439,7 @@ const CV = {
    installed (Edward blended with Ben), otherwise a male phone voice. Can be edited or deleted like any of your voices. */
 const SLOW = {
   id: 'cv_slow',
-  TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 12, effect: 'none', blend: { M5: 70, M2: 30 } },
+  TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 0, effect: 'none', blend: { M5: 70, M2: 30 } },
   phoneBase() {
     const l = Phone.list(), male = ['en-gb-x-rjs', 'en-gb-x-gbd', 'en-gb-x-gbc', 'en-us-x-iom', 'en-us-x-tpd', 'en-us-x-iol', 'en-au-x-aub', 'en-au-x-aud'];
     for (const m of male) { const v = l.find(x => x.tts.toLowerCase().startsWith(m) && !x.network); if (v) return v.id; }
@@ -1439,7 +1450,7 @@ const SLOW = {
     const cur = CV.get(this.id), aiOk = STV.on() && STV.installed();
     if (cur && !cur.auto) return;                                   // the user has tuned it themselves: leave it alone
     const base = aiOk ? 'st:M5' : this.phoneBase();
-    if (cur && cur.base === base) return;
+    if (cur && cur.base === base && cur.tune?.room === this.TUNE.room && cur.tune?.pitch === this.TUNE.pitch) return;
     CV.put({ id: this.id, name: 'Slow', emoji: '🐢', base, tune: Object.assign(TUNE0(), JSON.parse(JSON.stringify(this.TUNE))), builtin: true, auto: true });
   },
 };
@@ -1815,6 +1826,10 @@ const P = {
   tone() { return bookTone(this.narrator(), this.meta); },
   key(text) { return toneKey(text, this.narrator(), this.tone()); },
   isPhone() { return !!this.narrator().phone; },
+  async changeEcho(v) {
+    this.meta.echo = v; await DB.put('meta', this.meta);
+    renderPlayerMeta(); if (this.playing) this.restartUnit();
+  },
   async changeEmo(v) {
     this.meta.emo = v; await DB.put('meta', this.meta);
     renderPlayerMeta(); if (this.playing) this.restartUnit();
@@ -1890,14 +1905,14 @@ const P = {
     if (silentRef(unit.text, md)) { Out.silence(this.curId, 1); return; }
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
-    setFx(Pro.on ? md : null);
+    if (NATIVE?.setFx) NATIVE.setFx(fxFor(md));
     NATIVE.clonePlay(this.curId, k, sayText(unit.text, md), this.narrator().voice, md.temp, speed, md.pitch, Math.round((unit.head ? 650 : 120) * md.gap));
     this.ahead(S.prefetch + 1);
   },
   /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
   qEnd: -1,
   phoneQueue(tok, flush) {
-    const md = this.tone(), n = this.narrator(), fx = Pro.on ? fxJson(md) : '';
+    const md = this.tone(), n = this.narrator(), fx = fxFor(md);
     const rate = clamp(S.speed * md.pace, 0.4, 2.5), pitch = md.phonePitch;
     const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24);
     if (from > to) return;
@@ -2169,7 +2184,7 @@ const Tuner = {
         ${phone && !FX_PHONE ? `<div class="small muted">Sound effects work with the AI narrators. Phone voices are played by Android's own speech engine, which BookTalk can't add effects to. Change the voice above to an AI narrator to use the studio.</div>` : `
         ${slider('warmth', 'Warmth', -100, 100, 5, t.warmth, 'thin ↔ rich')}
         ${slider('clarity', 'Clarity', -100, 100, 5, t.clarity, 'soft ↔ crisp')}
-        ${slider('room', 'Room', 0, 100, 5, t.room, 'dry ↔ cathedral')}
+        ${slider('room', 'Echo', 0, 100, 5, t.room, 'dry ↔ cathedral')}
         <div class="tl" style="margin:12px 0 6px">Special effect</div>
         <div class="tfx">${FX_LIST.map(f => `<button data-fx="${f.id}" class="${t.effect === f.id ? 'on' : ''}"><span>${f.icon}</span>${f.name}</button>`).join('')}</div>`}
       </div>
@@ -2357,13 +2372,13 @@ function importVoiceSheet() {
 const Preview = {
   id: null, btn: null, icon: null,
   // Hear a narrator actually reading (made on the phone)
-  async run(narId, btn, moodId, icon, emo) { return this.play(Narr.get(narId), moodId, btn, icon, SAMPLE, null, emo); },
+  async run(narId, btn, moodId, icon, emo, echo) { return this.play(Narr.get(narId), moodId, btn, icon, SAMPLE, null, emo, echo); },
   // n: a narrator (or a Voice Tuner draft) · text: what to say · onEnd: called when it finishes or stops
-  async play(n, moodId, btn, icon, text = SAMPLE, onEnd, emo = 100) {
+  async play(n, moodId, btn, icon, text = SAMPLE, onEnd, emo = 100, echo = null) {
     this.onEnd = null;
     if (!icon) { Out.stop(); if (P.playing) P.pause(); Narr.stopSample(); }
     this.done();
-    const md = toneFor(n, moodId, emo);
+    const md = withEcho(toneFor(n, moodId, emo), echo);
     this.onEnd = onEnd || null;
     const id = this.id = 'pv' + uid();
     this.btn = btn; this.icon = icon || null;
@@ -2466,7 +2481,7 @@ const Maker = {
     let where = '';
     try {
       if (Narr.forBook(meta).phone) {
-        const n = Narr.forBook(meta), tn = bookTone(n, meta), fx = Pro.on ? fxJson(tn) : '';
+        const n = Narr.forBook(meta), tn = bookTone(n, meta), fx = fxFor(tn);
         for (const c of plan) {
           j.chNow = c.n + 1;
           const count = c.units.filter(u => !u.scene).length;
@@ -2516,7 +2531,7 @@ const Maker = {
         if (exported.has(c.ch)) continue;
         j.msg = `Saving chapter ${c.n + 1} of ${plan.length}…`; this.update();
         const tn = bookTone(Narr.forBook(meta), meta), fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
-        const ev = NATIVE.exportChapterFx ? await this.call('exportChapterFx', meta.title, fname, JSON.stringify(items), tn.pitch, Pro.on ? fxJson(tn) : '') : await this.call('exportChapter', meta.title, fname, JSON.stringify(items), tn.pitch);
+        const ev = NATIVE.exportChapterFx ? await this.call('exportChapterFx', meta.title, fname, JSON.stringify(items), tn.pitch, fxFor(tn)) : await this.call('exportChapter', meta.title, fname, JSON.stringify(items), tn.pitch);
         where = ev.where; exported.add(c.ch);
         LS.set('make.' + meta.id, { eng, exported: [...exported] });
       }
@@ -2959,6 +2974,7 @@ async function openBook(id) {
       <button class="btn">Change</button>
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
+    <div class="emorow"><span>🔊 Echo</span><input type="range" id="bkEcho" min="0" max="100" step="5" value="${m.echo ?? voiceEcho(Narr.forBook(m))}"><output id="bkEchoO">${echoLabel(m.echo ?? voiceEcho(Narr.forBook(m)))}</output></div>
     <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
@@ -2971,6 +2987,12 @@ async function openBook(id) {
     m.skipRefs = !m.skipRefs; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
     if (P.meta?.id === id) { P.meta.skipRefs = m.skipRefs; if (P.playing) P.restartUnit(); }
     toast(m.skipRefs ? 'Verse numbers won\'t be read out' : 'Verse numbers will be read out');
+  };
+  $('#bkEcho').oninput = e => { $('#bkEchoO').textContent = echoLabel(+e.target.value); };
+  $('#bkEcho').onchange = async e => {
+    m.echo = +e.target.value; await DB.put('meta', m);
+    if (P.meta?.id === id) { P.meta.echo = m.echo; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
+    else Preview.run(Narr.forBook(m).id, null, m.mood, null, m.emo ?? 100, m.echo);
   };
   $('#bkEmo').oninput = e => { $('#bkEmoO').textContent = emoLabel(+e.target.value); };
   $('#bkEmo').onchange = async e => {
@@ -3078,6 +3100,8 @@ $('#reader').addEventListener('click', e => { const p = e.target.closest('p[data
 const emoLabel = v => v == 0 ? 'Flat' : v < 60 ? 'Subtle' : v < 100 ? 'Gentle' : v == 100 ? 'Normal' : v < 150 ? 'Lively' : v < 200 ? 'Dramatic' : 'Theatrical';
 $('#emoR').oninput = e => { $('#emoO').textContent = emoLabel(+e.target.value); };
 $('#emoR').onchange = e => P.changeEmo(+e.target.value);
+$('#echoR').oninput = e => { $('#echoO').textContent = echoLabel(+e.target.value); };
+$('#echoR').onchange = e => P.changeEcho(+e.target.value);
 function renderPlayerMeta() {
   if (!P.meta) return;
   $('#plTitle').textContent = P.meta.title;
@@ -3085,6 +3109,7 @@ function renderPlayerMeta() {
   $('#plChap').textContent = `${P.chapterTitle()} · ${inc.indexOf(P.ch) + 1}/${inc.length}`;
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
   { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
+  { const v = P.meta.echo ?? voiceEcho(P.narrator()); $('#echoR').value = v; $('#echoO').textContent = echoLabel(v); }
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
   if (!P.playing) setStatus('');
