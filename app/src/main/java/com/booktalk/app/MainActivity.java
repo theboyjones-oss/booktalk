@@ -51,6 +51,7 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
     private Speaker speaker;
     private FrameLayout root;
     private SupertonicEngine supertonic;
+    private PiperEngine piper;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingMic;
     private final ExecutorService net = Executors.newFixedThreadPool(4);
@@ -87,6 +88,8 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
         speaker = new Speaker(this, this);
         supertonic = new SupertonicEngine(this);
         speaker.setSupertonic(supertonic);
+        piper = new PiperEngine(this);
+        speaker.setPiper(piper);
         cache = new AudioCache(this);
         kokoro = new KokoroEngine(this, cache, speaker, new KokoroEngine.Events() {
             @Override public void tuning(boolean on) {
@@ -460,6 +463,15 @@ public class MainActivity extends ComponentActivity implements Speaker.Listener 
                 try { out = supertonic.diagnose(); } catch (Throwable e) { out = "Test failed: " + e; }
                 try { emit(new JSONObject().put("type", "stdiag").put("reqId", reqId).put("text", out)); } catch (JSONException ignored) { }
             }, "st-diag").start();
+        }
+        /* Accent voices (Piper) */
+        @JavascriptInterface public boolean ppInstalled(String model) { return piper.installed(model); }
+        @JavascriptInterface public boolean ppInstalling(String model) { return piper.installing(model); }
+        @JavascriptInterface public void ppUninstall(String model) { new Thread(() -> piper.uninstall(model)).start(); }
+        @JavascriptInterface public void ppInstall(String model, String file) {
+            piper.install(model, file, (m, stage, pct, msg) -> {
+                try { emit(new JSONObject().put("type", "ppinst").put("model", m).put("stage", stage).put("pct", pct).put("msg", msg)); } catch (JSONException ignored) { }
+            });
         }
         @JavascriptInterface public boolean stInstalled() { return supertonic.installed(); }
         @JavascriptInterface public boolean stInstalling() { return supertonic.installing(); }

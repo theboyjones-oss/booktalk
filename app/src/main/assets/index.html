@@ -1097,7 +1097,7 @@ const Out = {
   // BibleTalk-style: queue passages back to back in the phone's own voice engine (flush starts a new queue)
   phoneSay(id, text, pitch, rate, voice, pauseMs, flush, tone, fx = '') {
     text = sayText(text || '', tone);
-    if ((fx || STV.is(voice)) && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx || ''); return; }
+    if ((fx || STV.is(voice) || PPV.is(voice)) && NATIVE?.renderQueue) { NATIVE.renderQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush, fx || ''); return; }
     if (NATIVE) { NATIVE.ttsQueue(id, text, pitch, rate, voice || '', pauseMs || 0, !!flush); return; }
     if (flush) { this.stopWeb(); try { speechSynthesis.cancel(); } catch {} }
     const u = new SpeechSynthesisUtterance(text || ' ');
@@ -1630,6 +1630,124 @@ const STV = {
   },
 };
 
+/* ---------------- Accent voices: Piper (VITS) models from real regional speakers, run on the phone ---------------- */
+const PP_MODELS = {
+  vctk:     { file: 'en_GB-vctk-medium', mb: 77, name: 'Voices of the British Isles', desc: 'Scottish, Irish, Northern Irish, Welsh and English regional speakers, all in one download' },
+  alba:     { file: 'en_GB-alba-medium', mb: 63, name: 'Alba', desc: 'Scottish woman' },
+  alan:     { file: 'en_GB-alan-medium', mb: 63, name: 'Alan', desc: 'Scottish man' },
+  northern: { file: 'en_GB-northern_english_male-medium', mb: 63, name: 'Northern English man', desc: 'Northern English man' },
+  cori:     { file: 'en_GB-cori-medium', mb: 64, name: 'Cori', desc: 'Southern English woman' },
+  semaine:  { file: 'en_GB-semaine-medium', mb: 77, name: 'Characters', desc: 'Four actors playing moods: sensible, angry, gloomy and cheerful' },
+};
+// [group, model, speaker, name, description]  (VCTK speaker numbers are from the model's speaker map)
+const PP_VOICES = [
+  ['Scottish', 'alba', 0, 'Alba', 'Scottish woman · clear and steady'],
+  ['Scottish', 'alan', 0, 'Alan', 'Scottish man'],
+  ['Scottish', 'vctk', 79, 'Hamish', 'Scottish man · Edinburgh'],
+  ['Scottish', 'vctk', 7, 'Fraser', 'Scottish man · Aberdeen'],
+  ['Scottish', 'vctk', 96, 'Magnus', 'Scottish man · Orkney'],
+  ['Scottish', 'vctk', 5, 'Ewan', 'Scottish man · Argyll'],
+  ['Scottish', 'vctk', 80, 'Isla', 'Scottish woman · Edinburgh'],
+  ['Scottish', 'vctk', 103, 'Morag', 'Scottish woman · Aberdeen'],
+  ['Scottish', 'vctk', 94, 'Kirsty', 'Scottish woman · Dumfries'],
+  ['Irish', 'vctk', 97, 'Liam', 'Irish man · Dublin'],
+  ['Irish', 'vctk', 67, 'Seán', 'Irish man · Tipperary'],
+  ['Irish', 'vctk', 106, 'Declan', 'Irish man · Donegal'],
+  ['Irish', 'vctk', 58, 'Aoife', 'Irish woman · Dublin'],
+  ['Irish', 'vctk', 41, 'Niamh', 'Irish woman · Athlone'],
+  ['Northern Irish', 'vctk', 61, 'Ciarán', 'Northern Irish man · Belfast'],
+  ['Northern Irish', 'vctk', 28, 'Ryan', 'Northern Irish man · Belfast'],
+  ['Northern Irish', 'vctk', 6, 'Siobhán', 'Northern Irish woman · Belfast'],
+  ['Welsh', 'vctk', 88, 'Cerys', 'Welsh woman · Cardiff'],
+  ['English regions', 'northern', 0, 'Northern lad', 'Northern English man'],
+  ['English regions', 'vctk', 9, 'Jack', 'Geordie man · Newcastle'],
+  ['English regions', 'vctk', 91, 'Gemma', 'Geordie woman · Newcastle'],
+  ['English regions', 'vctk', 12, 'Harry', 'Yorkshire man'],
+  ['English regions', 'vctk', 54, 'Lucy', 'Yorkshire woman'],
+  ['English regions', 'vctk', 1, 'Becky', 'Manchester woman'],
+  ['English regions', 'vctk', 104, 'Dan', 'Brummie man · Birmingham'],
+  ['English regions', 'vctk', 81, 'Tom', 'London man'],
+  ['English regions', 'vctk', 82, 'Ian', 'Cumbrian man'],
+  ['English regions', 'vctk', 0, 'Holly', 'West Country woman'],
+  ['English regions', 'cori', 0, 'Cori', 'Southern English woman · calm narrator'],
+  ['Further afield', 'vctk', 71, 'Bruce', 'Australian man · Sydney'],
+  ['Characters', 'semaine', 0, 'Prudence', 'Sensible, level-headed woman'],
+  ['Characters', 'semaine', 1, 'Spike', 'Angry, argumentative man'],
+  ['Characters', 'semaine', 2, 'Obadiah', 'Gloomy, downbeat man'],
+  ['Characters', 'semaine', 3, 'Poppy', 'Cheerful, bubbly woman'],
+];
+const PP_FLAGS = { 'Scottish': '🏴󠁧󠁢󠁳󠁣󠁴󠁿', 'Irish': '☘️', 'Northern Irish': '🌊', 'Welsh': '🏴󠁧󠁢󠁷󠁬󠁳󠁿', 'English regions': '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 'Further afield': '🌏', 'Characters': '🎭' };
+const PPV = {
+  is: id => typeof id === 'string' && id.startsWith('pp:'),
+  on: () => !!NATIVE?.ppInstall,
+  valid(id) { return this.on() && PP_VOICES.some(v => 'pp:' + v[1] + ':' + v[2] === id); },
+  installed: m => !!NATIVE?.ppInstalled?.(m),
+  installing: m => !!NATIVE?.ppInstalling?.(m),
+  get(id) {
+    const [, m, sid] = String(id).split(':'), v = PP_VOICES.find(x => x[1] === m && String(x[2]) === sid) || PP_VOICES[0];
+    return { id: 'pp:' + v[1] + ':' + v[2], tts: 'pp:' + v[1] + ':' + v[2], name: v[3], desc: v[4] + ' · accent voice', group: v[0], model: v[1], phone: true, piper: true };
+  },
+  list() { return PP_VOICES.map(v => this.get('pp:' + v[1] + ':' + v[2])); },
+  st: {},
+  install(m) {
+    if (!this.on()) { toast('Update BookTalk to get accent voices'); return; }
+    this.st[m] = { stage: 'download', pct: 0 }; this.paint();
+    NATIVE.ppInstall(m, PP_MODELS[m].file);
+  },
+  remove(m) {
+    openSheet(`<h4>Remove “${esc(PP_MODELS[m].name)}”?</h4><p class="muted" style="margin-top:0">Frees about ${PP_MODELS[m].mb} MB. You can download it again any time.</p><div class="row" style="gap:10px"><button class="btn grow" onclick="closeSheet()">Keep</button><button class="btn grow" id="ppDelYes" style="background:#5a1f1f;color:#fff">Remove</button></div>`,
+      sh => $('#ppDelYes', sh).onclick = () => { P.pause?.(); NATIVE.ppUninstall(m); closeSheet(); toast('Removed'); setTimeout(() => { if ($('#narrList')?.offsetParent) renderNarrators(); }, 400); });
+  },
+  onNative(ev) {
+    this.st[ev.model] = ev; this.paint();
+    if (ev.stage === 'done') { toast(PP_MODELS[ev.model].name + ' is ready 🎉'); delete this.st[ev.model]; if ($('#sheet [data-ppcard]') || $('.sheet [data-ppcard]')) closeSheet(); if ($('#narrList')?.offsetParent) renderNarrators(); }
+    if (ev.stage === 'error') toast('Download stopped: ' + (ev.msg || 'error') + '. Tap Download to try again.', 5000);
+  },
+  card(m) {
+    const M = PP_MODELS[m], s = this.st[m] || {}, busy = this.installing(m) || s.stage === 'download' || s.stage === 'extract';
+    if (this.installed(m)) return `<div class="small muted row" style="margin:2px 2px 10px">✓ ${esc(M.name)} downloaded<span class="grow"></span><button class="small" data-ppdel="${m}" style="color:var(--tx3)">Remove</button></div>`;
+    return `<div class="card" style="margin-bottom:8px;padding:10px 12px"><div class="row" style="gap:10px"><div class="grow"><b>${esc(M.name)}</b><div class="small muted">${esc(M.desc)}</div></div>
+      ${busy ? '' : `<button class="btn" data-ppget="${m}" style="white-space:nowrap">⬇️ ${M.mb} MB</button>`}</div>
+      ${busy ? `<div class="stbar" style="margin-top:8px"><i style="width:${s.pct > 0 ? s.pct : 1}%"></i></div><div class="small muted">${s.stage === 'extract' ? 'Unpacking…' : 'Downloading… ' + Math.max(0, s.pct || 0) + '%'}</div>` : ''}</div>`;
+  },
+  paint() {
+    $$('[data-ppcard]').forEach(el => { el.innerHTML = this.card(el.dataset.ppcard); this.bind(el); });
+  },
+  bind(root) {
+    $$('[data-ppget]', root).forEach(b => b.onclick = () => this.install(b.dataset.ppget));
+    $$('[data-ppdel]', root).forEach(b => b.onclick = () => this.remove(b.dataset.ppdel));
+  },
+  need(m) {
+    if (this.installed(m)) return false;
+    openSheet(`<h4>Download this accent voice?</h4><p class="muted" style="margin-top:0">It's made on your phone, free and offline once downloaded.</p><div data-ppcard="${m}"></div>`, () => this.paint());
+    return true;
+  },
+  // rows for the Narrators page (all voices, grouped) or the picker (downloaded ones only)
+  rows(cur, pickAttr, picker) {
+    let out = '', last = '';
+    for (const v of this.list()) {
+      if (picker && !this.installed(v.model)) continue;
+      if (v.group !== last) { last = v.group; out += `<div class="small" style="font-weight:700;margin:12px 2px 6px;color:var(--tx2)">${PP_FLAGS[v.group] || ''} ${esc(v.group)}</div>`; }
+      const ok = this.installed(v.model);
+      out += picker
+        ? `<div class="opt ${v.id === cur ? 'on' : ''}" style="padding:8px 2px"><button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button><button class="grow" ${pickAttr}="${esc(v.id)}" style="text-align:left;padding:6px 4px"><b>${esc(v.name)}${v.id === cur ? ' ✓' : ''}</b><div class="small muted">${esc(v.desc)}</div></button></div>`
+        : `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}${ok ? '' : ';opacity:.75'}">
+      <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
+      <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}${ok ? '' : ' · ⬇️ ' + PP_MODELS[v.model].mb + ' MB'}</div>
+        <button class="small" data-read="${esc(v.id)}" style="color:var(--ac2);margin-top:4px">Hear it read</button></div>
+      <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`;
+    }
+    return out;
+  },
+  section(cur) {
+    if (!this.on()) return '';
+    return `<div class="sect" style="margin-top:6px"><b>🗺️ Accent voices</b><div class="small muted">Real regional voices from across the British Isles, made on your phone. Tap ▶ to try one; each set is a one-off download.</div></div>
+      ${Object.keys(PP_MODELS).map(m => `<div data-ppcard="${m}">${this.card(m)}</div>`).join('')}
+      ${this.rows(cur)}
+      <p class="small muted">Piper voices trained on the CSTR VCTK corpus (University of Edinburgh) and other open recordings, CC BY 4.0.</p>`;
+  },
+};
+
 /* ---------------- Voice cloning (Pocket TTS): copy a real voice from a 10–30 s recording ---------------- */
 const Clones = {
   is: id => typeof id === 'string' && id.startsWith('clone:'),
@@ -1704,22 +1822,24 @@ const Clones = {
 
 const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
 const Narr = {
-  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (STV.is(id) && STV.on()) || (Clones.is(id) && !!Clones.find(id)) || (AI && PRESETS.some(x => x[0] === id)); },
+  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (STV.is(id) && STV.on()) || (PPV.is(id) && PPV.valid(id)) || (Clones.is(id) && !!Clones.find(id)) || (AI && PRESETS.some(x => x[0] === id)); },
   get(id) {
     if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : AI ? PRESETS[0][0] : Phone.best();
     if (CV.is(id)) { const c = CV.get(id), b = this.get(c.base), spec = b.ai ? blendSpec(c.tune) : ''; return { ...b, id: c.id, name: c.name, emoji: c.emoji || '🎛️', desc: 'Your voice · made from ' + (spec ? 'a blend of AI voices' : b.name), custom: true, base: b.id, baseName: spec ? 'a blend of AI voices' : b.name, tune: c.tune, tts: spec ? 'st:' + spec : b.tts }; }
     if (STV.is(id)) return STV.get(id);
+    if (PPV.is(id)) return PPV.get(id);
     if (Clones.is(id)) return Clones.get(id);
     if (Phone.is(id)) return Phone.get(id);
     const p = PRESETS.find(x => x[0] === id); return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] };
   },
   forBook(meta) { return this.get(meta && this.valid(meta.narrator) ? meta.narrator : S.narrator); },
-  has(id) { if (CV.is(id)) return this.has(this.get(id).base); if (STV.is(id)) return STV.installed(); if (Clones.is(id)) return !!NATIVE?.voiceHas?.(Clones.get(id).voice); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
+  has(id) { if (CV.is(id)) return this.has(this.get(id).base); if (STV.is(id)) return STV.installed(); if (PPV.is(id)) return PPV.installed(PPV.get(id).model); if (Clones.is(id)) return !!NATIVE?.voiceHas?.(Clones.get(id).voice); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
   loading: new Map(),
   // Make sure the narrator's sample is on the phone (downloads ~1 MB the first time)
   ensure(id) {
     if (CV.is(id)) return this.ensure(this.get(id).base);
     if (STV.is(id)) return STV.installed() ? Promise.resolve(true) : (STV.need(), Promise.reject(new Error('The AI voices need downloading first')));
+    if (PPV.is(id)) { const m = PPV.get(id).model; return PPV.installed(m) ? Promise.resolve(true) : (PPV.need(m), Promise.reject(new Error('That accent voice needs downloading first'))); }
     if (Clones.is(id)) return this.has(id) ? Promise.resolve(true) : Promise.reject(new Error('the recording for this voice is missing'));
     if (this.has(id)) return Promise.resolve(true);
     if (this.loading.has(id)) return this.loading.get(id);
@@ -1792,6 +1912,7 @@ const Narr = {
       ${AI ? `<div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>` : (noCustom || !CV.all().length ? '' : `<div class="sect"><b>📱 Phone voices</b></div>`)}
       ${STV.on() ? `<div class="sect"><b>🤖 AI narrators</b><div class="small muted">Natural voices made on your phone.</div></div>${STV.installed() ? this.aiRows(current, 'data-pick') : '<div class="stcardwrap"></div>'}` : ''}
       ${Clones.all().length ? `<div class="sect" style="margin-top:12px"><b>🎤 Cloned voices</b></div>${this.cloneRows(current, 'data-pick')}` : ''}
+      ${PPV.on() && Object.keys(PP_MODELS).some(m => PPV.installed(m)) ? `<div class="sect" style="margin-top:12px"><b>🗺️ Accent voices</b><div class="small muted">Download more on the Narrators page.</div></div>${PPV.rows(current, 'data-pick', true)}` : ''}
       ${STV.on() ? `<div class="sect" style="margin-top:12px"><b>📱 Phone voices</b></div>` : ''}
       ${this.phoneRows(current, 'data-pick')}
       <button class="btn ghost block" data-more style="margin:6px 0 4px">Get more phone voices</button>
@@ -1806,6 +1927,7 @@ const Narr = {
         this.stopSample();
         const pv = this.get(b.dataset.pick);
         if (pv.ai && !STV.installed()) { STV.need(); return; }
+        if (pv.piper && !PPV.installed(pv.model)) { PPV.need(pv.model); return; }
         if (Phone.is(b.dataset.pick) || pv.phone) { closeSheet(); onPick(b.dataset.pick); return; }
         const id = b.dataset.pick, label = b.querySelector('b');
         label.textContent = this.get(id).name + ' · getting voice…';
@@ -1875,6 +1997,7 @@ const P = {
     if (!this.meta) return;
     const n = this.narrator();
     if (n.ai && !STV.installed()) { STV.need(); return; }
+    if (n.piper && !PPV.installed(n.model)) { PPV.need(n.model); return; }
     if (n.phone) {
       this.playing = true; renderPlayState();
       Out.session(true, true, this.meta.title, this.chapterTitle());
@@ -2069,6 +2192,7 @@ function onNative(ev) {
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'expprog': Maker.onProg(ev); break;
     case 'uimode': applyTheme(); break;
+    case 'ppinst': PPV.onNative(ev); break;
     case 'stinst': STV.onNative(ev); try { SLOW.ensure(); } catch {} break;
     case 'stdiag': if ($('#stDiagOut')) { $('#stDiagOut').textContent = ev.text; $('#sheet h4').textContent = '🩺 AI voice test'; $('#sheet').insertAdjacentHTML('beforeend', '<button class="btn block" id="stDiagCopy" style="margin-top:8px">Copy result</button>'); $('#stDiagCopy').onclick = async () => { try { await navigator.clipboard.writeText(ev.text); toast('Copied'); } catch { toast('Couldn\'t copy'); } }; } break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
@@ -2392,6 +2516,7 @@ const Preview = {
     const id = this.id = 'pv' + uid();
     this.btn = btn; this.icon = icon || null;
     if (n.ai && !STV.installed()) { this.done(); STV.need(); return; }
+    if (n.piper && !PPV.installed(n.model)) { this.done(); PPV.need(n.model); return; }
     if (n.phone) {
       if (btn) { btn.disabled = true; btn.dataset.l = btn.textContent; btn.textContent = n.ai ? 'Making…' : 'Playing…'; }
       const spans = sentenceSpans(text), q = quoteFlags(text, spans), rate = clamp(S.speed * md.pace, 0.4, 2.5);
@@ -3238,6 +3363,7 @@ function renderNarrators() {
       <div class="grow"><b>${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">${esc(v.desc)}</div>
         <button class="small" data-read="${esc(v.id)}" style="color:var(--ac2);margin-top:4px">Hear it read</button></div>
       <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : '<div class="stcardwrap"></div>') : ''}
+    ${PPV.section(cur)}
     <div class="sect"><b>📱 Phone voices</b><div class="small muted">Your phone's own voices: start instantly and read with no pauses. Use “Get more phone voices” to add accents.</div></div>` +
     (phone.length ? phone : [Phone.get('tts:')]).map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
@@ -3253,7 +3379,7 @@ function renderNarrators() {
       <button class="btn ${id === cur ? 'pri' : ''}" data-use="${id}">${id === cur ? '✓' : 'Use'}</button></div>`).join('') +
     `<p class="small muted">Voices from Kyutai's open voice collection (VCTK and volunteer recordings), recreated on this phone, so they're free, offline and unlimited.</p>`);
   $$('#narrList .pocketInst').forEach(el => renderPocketInstall(el));
-  STV.paint();
+  STV.paint(); PPV.bind($('#narrList'));
   $$('#narrList [data-hear]').forEach(b => b.onclick = () => Narr.hear(b, b.dataset.hear));
   $$('#narrList [data-phear]').forEach(b => b.onclick = () => Narr.hearPhone(b, b.dataset.phear));
   $('#nvMore').onclick = () => Phone.moreVoices();
@@ -3265,7 +3391,9 @@ function renderNarrators() {
   $$('#narrList [data-tshare]').forEach(b => b.onclick = () => shareVoice(b.dataset.tshare));
   $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b, previewMood));
   $$('#narrList [data-use]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.use; b.textContent = '…';
+    const id = b.dataset.use;
+    if (PPV.is(id) && !PPV.installed(PPV.get(id).model)) { PPV.need(PPV.get(id).model); return; }
+    b.textContent = '…';
     try { await Narr.ensure(id); } catch (e) { toast('Couldn\'t get that voice. Check your internet connection.'); renderNarrators(); return; }
     S.narrator = id; saveSettings(); renderNarrators();
     toast(Narr.get(id).name + ' will read new books. Change a book\'s narrator on its page.', 4000);

@@ -472,8 +472,17 @@ public class Speaker {
             int sr = st.sampleRate();
             return new PhoneRenderer.Pcm(Math.abs(p - 1f) < 0.005f ? a : PhoneRenderer.resample(a, Math.round(sr * p), sr), sr);
         }
+        if (voice != null && voice.startsWith("pp:")) {
+            if (piper == null) throw new IllegalStateException("Accent voices aren't available");
+            float p = Math.max(0.5f, Math.min(2f, pitch));
+            short[] a = piper.speak(voice.substring(3), text, Math.max(0.4f, Math.min(2.5f, rate / p)));
+            int sr = piper.lastRate;
+            return new PhoneRenderer.Pcm(Math.abs(p - 1f) < 0.005f ? a : PhoneRenderer.resample(a, Math.round(sr * p), sr), sr);
+        }
         return phone.render(text, pitch, rate, voice);
     }
+    private PiperEngine piper;
+    void setPiper(PiperEngine e) { piper = e; }
     VoiceRenderer exportRouter() { PhoneRenderer ph = exportRenderer(); return (t, p, r, v) -> renderAny(ph, t, p, r, v); }
     private static final class RItem { String id, text, voice; float pitch, rate; int pauseMs; PhoneRenderer.Pcm pcm; String err; }
     private static final class Marker { final long frame; final String id; final char kind; final String msg; Marker(long f, String i, char k, String m) { frame = f; id = i; kind = k; msg = m; } }
