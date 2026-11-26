@@ -1,0 +1,33 @@
+name: Probe Piper accents
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install sherpa-onnx==1.13.8 numpy soundfile || pip install sherpa-onnx numpy soundfile
+      - name: Download Piper voices (sherpa-onnx builds)
+        run: |
+          mkdir -p m && cd m
+          for v in en_GB-alba-medium en_GB-northern_english_male-medium en_GB-southern_english_female-low en_GB-southern_english_female-medium en_GB-alan-medium en_GB-cori-medium en_GB-cori-high en_GB-jenny_dioco-medium en_GB-semaine-medium en_GB-aru-medium en_GB-vctk-medium; do
+            curl -sSLf -o $v.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-$v.tar.bz2 && tar xjf $v.tar.bz2 && rm $v.tar.bz2 && echo "got $v" || echo "MISSING $v"
+          done
+          ls; du -sh *
+      - name: Probe
+        run: |
+          mkdir -p out
+          python tools/piperprobe/probe.py m out 2>&1 | tee out/console.txt || true
+          cd out && for f in *.wav; do ffmpeg -loglevel error -y -i "$f" -b:a 64k "${f%.wav}.mp3"; done
+      - name: Publish
+        if: always()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          cd out
+          gh release create "probe-piper-${{ github.run_number }}" --prerelease --title "Piper accent probe ${{ github.run_number }}" --notes-file results.txt $(ls results.txt console.txt *.mp3 2>/dev/null)
