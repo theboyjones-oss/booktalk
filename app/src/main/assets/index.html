@@ -1281,7 +1281,11 @@ function stripRefs(t) {
   return t
     .replace(/\[\s*\d{1,4}\s*\]|[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, '')
     .replace(REF_RE, '$1')
+    .replace(/(^|\s)\d{1,3}\s*:\s*\d{1,3}(?=\s)/g, '$1')                      // spaced: "1 : 1"
     .replace(/(^|\n)\s*\d{1,3}\s+(?=[\p{Lu}“"‘'(])/gu, '$1')
+    .replace(/([.!?;:,"”’')\]]\s+)\d{1,3}\s+(?=[\p{Lu}“"‘'(])/gu, '$1')        // inline verse numbers: "…the earth. 2 Now the earth…"
+    .replace(/(^|[\s.!?;:,"”’')\]])\d{1,3}(?=\p{Lu}\p{Ll})/gu, '$1')         // glued on: "2Now the earth"
+    .replace(/(^|\n)\s*(?:verse|v\.)\s*\d{1,3}\b[.:]?\s*/gi, '$1')
     .replace(/\(\s*[,;]?\s*\)|\[\s*\]/g, '').replace(/\s+([,.;:!?)])/g, '$1')
     .replace(/([“"‘'])\s+/g, '$1')
     .replace(/[ \t]{2,}/g, ' ').trim();
@@ -1291,7 +1295,11 @@ function stripRefs(t) {
 const silentRef = (t, tone) => !!tone?.refs && !speakable(stripRefs(t)).replace(/[\s\p{P}]/gu, '');
 function looksReferenced(chapters) {
   let n = 0, total = 0;
-  for (const c of chapters) for (const p of c.paras) { if (++total > 4000) break; if (/^\s*\d{1,3}[:.]\d{1,3}\b/.test(p) || /^\s*\d{1,3}\s+\p{Lu}/u.test(p)) n++; }
+  for (const c of chapters) for (const p of c.paras) {
+    if (++total > 4000) break;
+    if (/^\s*\d{1,3}[:.]\d{1,3}\b/.test(p) || /^\s*\d{1,3}\s*\p{Lu}/u.test(p)) n++;
+    else if ((p.match(/[.!?;:"”’]\s+\d{1,3}\s*\p{Lu}/gu) || []).length >= 2) n++;      // verses run together in one paragraph
+  }
   return n >= 15 && n / Math.max(1, total) > 0.15;
 }
 function sayText(t, x) {
@@ -2016,7 +2024,9 @@ const P = {
     const [meta, content] = await Promise.all([DB.get('meta', id), DB.get('content', id)]);
     if (!meta || !content) { toast('Book not found'); return; }
     await fixWrapped(content);
-    if (meta.skipRefs === undefined) { meta.skipRefs = looksReferenced(content.chapters); await DB.put('meta', meta); }
+    if (meta.skipRefs === undefined || (!meta.skipRefs && meta.refsChk !== 2)) {   // (re)check with the 6.6 detector, which also spots inline verse numbers
+      meta.skipRefs = looksReferenced(content.chapters); meta.refsChk = 2; await DB.put('meta', meta);
+    }
     this.meta = meta; this.content = content; this.unitsCache.clear();
     const inc = this.included();
     if (!inc.length) { toast('All chapters are switched off for this book'); return; }
@@ -2955,7 +2965,7 @@ async function importFile(file, extra = {}, quiet) {
       words: book.chapters.reduce((a, c) => a + c.paras.reduce((b, p) => b + p.split(/\s+/).length, 0), 0),
       narrator: S.narrator, pos: null, progress: 0,
       subject: book.subject || '', description: book.description || '',
-      skipRefs: looksReferenced(book.chapters),
+      skipRefs: looksReferenced(book.chapters), refsChk: 2,
       ...extra,
     };
     const first = meta.include.indexOf(true); meta.pos = { ch: first < 0 ? 0 : first, p: 0 };
@@ -3202,7 +3212,7 @@ async function openBook(id) {
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
   $('#bkPrep')?.addEventListener('click', async () => { if (!P.meta || P.meta.id !== id) await P.open(id, false); showPlayer(false); Prep.sheet(); });
   $('#bkRefs').onclick = async e => {
-    m.skipRefs = !m.skipRefs; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
+    m.skipRefs = !m.skipRefs; m.refsChk = 2; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
     if (P.meta?.id === id) { P.meta.skipRefs = m.skipRefs; if (P.playing) P.restartUnit(); }
     toast(m.skipRefs ? 'Verse numbers won\'t be read out' : 'Verse numbers will be read out');
   };
