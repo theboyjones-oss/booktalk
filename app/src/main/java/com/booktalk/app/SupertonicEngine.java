@@ -83,7 +83,8 @@ final class SupertonicEngine {
                     out.getParentFile().mkdirs();
                     File tmp = new File(out.getPath() + ".part");
                     final long base = done, tot = total;
-                    download(f.getString("url"), tmp, n -> prog.at("download", (int) Math.min(99, (base + n) * 100 / tot), f.getString("path")));
+                    final String label = f.getString("path");
+                    download(f.getString("url"), tmp, n -> prog.at("download", (int) Math.min(99, (base + n) * 100 / tot), label));
                     if (!tmp.renameTo(out)) throw new IllegalStateException("Couldn't save " + f.getString("path"));
                     done += Math.max(1, size > 0 ? size : out.length());
                 }
