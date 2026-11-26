@@ -302,7 +302,7 @@ nav.tabs button{font-size:11px}
   <!-- VOICES -->
   <section class="view" id="v-voices">
     <header class="top"><h1>Narrators</h1></header>
-    <p class="muted small" style="margin-top:0">Tap ▶ to hear a voice, or <b>Hear it read</b> to hear them reading a book in the mood you pick. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
+    <p class="muted small" style="margin-top:0">Tap ▶ to hear a voice, or <b>Hear it read</b> to hear them reading a book. Tap <b>Use</b> to make them the narrator for new books. You can give each book its own narrator from the book page or the player.</p>
     <div id="narrList"></div>
   </section>
 
@@ -1415,11 +1415,32 @@ const CV = {
   all() { return LS.get('cvoices', []); },
   get(id) { return this.all().find(v => v.id === id); },
   put(v) { const l = this.all(), i = l.findIndex(x => x.id === v.id); if (i >= 0) l[i] = v; else l.push(v); LS.set('cvoices', l); },
-  del(id) { LS.set('cvoices', this.all().filter(v => v.id !== id)); },
+  del(id) { if (id === SLOW.id) LS.set('slowGone', true); LS.set('cvoices', this.all().filter(v => v.id !== id)); },
+  mine() { return this.all().filter(v => !v.builtin); },   // voices the user made (the built-in "Slow" doesn't count)
   code(v) { return 'BOOKTALK-VOICE:' + btoa(unescape(encodeURIComponent(JSON.stringify({ n: v.name, b: v.base, t: v.tune, e: v.emoji })))); },
   parse(code) {
     const m = String(code || '').replace(/\s+/g, '').match(/BOOKTALK-VOICE:([A-Za-z0-9+/=]+)/); if (!m) return null;
     try { const o = JSON.parse(decodeURIComponent(escape(atob(m[1])))); return { name: String(o.n || 'Shared voice').slice(0, 40), base: o.b, tune: Object.assign(TUNE0(), o.t || {}), emoji: o.e || '🎛️' }; } catch { return null; }
+  },
+};
+
+/* "Slow": a built-in deep, slow, warm storyteller made with the Voice Tuner. Uses the deep AI voices when they're
+   installed (Edward blended with Ben), otherwise a male phone voice. Can be edited or deleted like any of your voices. */
+const SLOW = {
+  id: 'cv_slow',
+  TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 12, effect: 'none', blend: { M5: 70, M2: 30 } },
+  phoneBase() {
+    const l = Phone.list(), male = ['en-gb-x-rjs', 'en-gb-x-gbd', 'en-gb-x-gbc', 'en-us-x-iom', 'en-us-x-tpd', 'en-us-x-iol', 'en-au-x-aub', 'en-au-x-aud'];
+    for (const m of male) { const v = l.find(x => x.tts.toLowerCase().startsWith(m) && !x.network); if (v) return v.id; }
+    return Phone.best();
+  },
+  ensure() {
+    if (LS.get('slowGone', false)) return;
+    const cur = CV.get(this.id), aiOk = STV.on() && STV.installed();
+    if (cur && !cur.auto) return;                                   // the user has tuned it themselves: leave it alone
+    const base = aiOk ? 'st:M5' : this.phoneBase();
+    if (cur && cur.base === base) return;
+    CV.put({ id: this.id, name: 'Slow', emoji: '🐢', base, tune: Object.assign(TUNE0(), JSON.parse(JSON.stringify(this.TUNE))), builtin: true, auto: true });
   },
 };
 
@@ -1432,7 +1453,7 @@ const Pro = {
   // why a voice can't be saved on the free version ('' = fine)
   why(tune, isNew) {
     if (this.on) return '';
-    if (isNew && CV.all().length >= this.FREE_VOICES) return 'limit';
+    if (isNew && CV.mine().length >= this.FREE_VOICES) return 'limit';
     if (this.usesStudio(tune)) return 'studio';
     return '';
   },
@@ -1464,7 +1485,7 @@ const Pro = {
       <p class="muted">To try Pro now, go to <b>Settings</b> and tap the <b>version number</b> at the bottom <b>7 times</b>. Do the same again to go back to Free.</p>
       <button class="btn block" onclick="closeSheet()">OK</button>`);
   },
-  badge() { return this.on ? '<span class="probadge on">PRO</span>' : `<span class="probadge">FREE · ${Math.min(CV.all().length, this.FREE_VOICES)}/${this.FREE_VOICES}</span>`; },
+  badge() { return this.on ? '<span class="probadge on">PRO</span>' : `<span class="probadge">FREE · ${Math.min(CV.mine().length, this.FREE_VOICES)}/${this.FREE_VOICES}</span>`; },
 };
 
 /* ---------------- Narrators (Kyutai sample voices, made on this phone by Pocket TTS) ---------------- */
@@ -2019,12 +2040,12 @@ function onNative(ev) {
   switch (ev.type) {
     case 'done': if (ev.id === Preview.id) Preview.done(); else if (ev.id?.[0] === 'q') P.phoneEvent('done', ev.id); else P.onDone(ev.id); break;
     case 'error': if (ev.id === Preview.id) { Preview.done(); toast('Voice error: ' + (ev.msg || '')); } else if (ev.id?.[0] === 'q') P.phoneEvent('error', ev.id, ev.msg); else P.onError(ev.id, ev.msg); break;
-    case 'voices': Phone.refresh(); if ($('#narrList')?.offsetParent) renderNarrators(); break;
+    case 'voices': Phone.refresh(); try { SLOW.ensure(); } catch {} if ($('#narrList')?.offsetParent) renderNarrators(); break;
     case 'kokinst': if (ev.pack === 'pocket') Pocket.onInstall(ev); break;
     case 'kokprep': case 'export': case 'http': Maker.onNative(ev); break;
     case 'expprog': Maker.onProg(ev); break;
     case 'uimode': applyTheme(); break;
-    case 'stinst': STV.onNative(ev); break;
+    case 'stinst': STV.onNative(ev); try { SLOW.ensure(); } catch {} break;
     case 'stdiag': if ($('#stDiagOut')) { $('#stDiagOut').textContent = ev.text; $('#sheet h4').textContent = '🩺 AI voice test'; $('#sheet').insertAdjacentHTML('beforeend', '<button class="btn block" id="stDiagCopy" style="margin-top:8px">Copy result</button>'); $('#stDiagCopy').onclick = async () => { try { await navigator.clipboard.writeText(ev.text); toast('Copied'); } catch { toast('Couldn\'t copy'); } }; } break;
     case 'start': if (ev.id?.[0] === 'q') P.phoneEvent('start', ev.id); Sync.start(ev.id, ev.dur); if (ev.id === P.curId) setStatus('reading'); if (ev.id === Preview.id) Preview.started(); break;
     case 'range': Sync.range(ev.id, ev.start); break;
@@ -2291,6 +2312,7 @@ const Tuner = {
     if (why) { Pro.sheet(why); return; }
     if (!d.name) { this.randomName(); }
     const v = { id: (!asCopy && d.id) || 'cv_' + uid(), name: asCopy ? d.name + ' (copy)' : d.name, emoji: d.emoji, base: d.base, tune: JSON.parse(JSON.stringify(d.tune)), made: Date.now() };
+    if (v.id === SLOW.id) v.builtin = true;   // edited by you now, so it won't be reset, but still doesn't use up a free slot
     CV.put(v); d.id = v.id; d.name = v.name;
     this.render();
     const inBook = P.meta && P.meta.narrator !== v.id;
@@ -3328,6 +3350,7 @@ function renderSettings() {
   document.documentElement.style.setProperty('--read', S.readSize + 'px');
   try { if (navigator.storage?.persist) navigator.storage.persist(); } catch {}
   Pocket.refresh();
+  try { SLOW.ensure(); } catch {}
   // Older versions could download Kokoro voices; they're no longer used, so free the space
   try { if (NATIVE?.kokoroInstalled && NATIVE.kokoroInstalled()) NATIVE.kokoroUninstall(); } catch {}
   await renderLibrary();
