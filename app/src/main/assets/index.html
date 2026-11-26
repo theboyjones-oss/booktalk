@@ -1262,8 +1262,29 @@ function moodText(t, style) {
     return m;
   });
 }
+// Verse / reference numbers that are on the page but shouldn't be read out: 01:012:014, 1:1, 3:16, [12], ¹², and a
+// verse number starting a line ("1 In the beginning…"). Used only when the book's "Don't read verse numbers" is on.
+const REF_RE = /(^|[\s(\[{“"‘'])\d{1,3}(?::\d{1,3}){1,2}(?:[-–]\d{1,3})?[a-c]?(?=[\s,;:)\]}.”"’']|$)/g;
+function stripRefs(t) {
+  return t
+    .replace(/\[\s*\d{1,4}\s*\]|[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, '')
+    .replace(REF_RE, '$1')
+    .replace(/(^|\n)\s*\d{1,3}\s+(?=[\p{Lu}“"‘'(])/gu, '$1')
+    .replace(/\(\s*[,;]?\s*\)|\[\s*\]/g, '').replace(/\s+([,.;:!?)])/g, '$1')
+    .replace(/([“"‘'])\s+/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ').trim();
+}
+// Does this book look like it's full of verse references (Bible, Quran, hymn books…)?
+// Nothing left to say once the numbers are gone: skip it without the usual pause, so there's no gap.
+const silentRef = (t, tone) => !!tone?.refs && !speakable(stripRefs(t)).replace(/[\s\p{P}]/gu, '');
+function looksReferenced(chapters) {
+  let n = 0, total = 0;
+  for (const c of chapters) for (const p of c.paras) { if (++total > 4000) break; if (/^\s*\d{1,3}[:.]\d{1,3}\b/.test(p) || /^\s*\d{1,3}\s+\p{Lu}/u.test(p)) n++; }
+  return n >= 15 && n / Math.max(1, total) > 0.15;
+}
 function sayText(t, x) {
   const tone = x && typeof x === 'object' ? x : toneFor(null, x);
+  if (tone.refs) t = stripRefs(t);
   t = moodText(speakable(t), tone.style);
   const sp = tone.spause ?? 1;
   if (sp === 0) t = t.replace(/\.\.\.(?=\s|$)/g, '.');
@@ -1372,6 +1393,10 @@ function quoteFlags(text, spans) {
     inq[i] = q;
   }
   return spans.map(([a, b]) => { let n = 0, m = 0; for (let i = a; i < b; i++) if (/\S/.test(text[i])) { m++; if (inq[i]) n++; } return m > 0 && n / m > 0.5; });
+}
+function bookTone(nar, meta) {
+  const t = toneFor(nar, meta?.mood, meta?.emo ?? 100);
+  return meta?.skipRefs ? { ...t, refs: true, tag: (t.tag || '') + 'r' } : t;
 }
 const fxJson = tone => tone?.fx ? JSON.stringify(tone.fx) : '';
 function setFx(tone) { if (NATIVE?.setFx) NATIVE.setFx(fxJson(tone)); }
@@ -1767,7 +1792,7 @@ const P = {
   unitsFor(ch) { if (!this.unitsCache.has(ch)) this.unitsCache.set(ch, buildUnits(this.content.chapters[ch].paras, MAX_UNIT)); return this.unitsCache.get(ch); },
   narrator() { return Narr.forBook(this.meta); },
   mood() { return moodOf(this.meta?.mood); },
-  tone() { return toneFor(this.narrator(), this.meta?.mood, this.meta?.emo ?? 100); },
+  tone() { return bookTone(this.narrator(), this.meta); },
   key(text) { return toneKey(text, this.narrator(), this.tone()); },
   isPhone() { return !!this.narrator().phone; },
   async changeEmo(v) {
@@ -1785,6 +1810,7 @@ const P = {
     const [meta, content] = await Promise.all([DB.get('meta', id), DB.get('content', id)]);
     if (!meta || !content) { toast('Book not found'); return; }
     await fixWrapped(content);
+    if (meta.skipRefs === undefined) { meta.skipRefs = looksReferenced(content.chapters); await DB.put('meta', meta); }
     this.meta = meta; this.content = content; this.unitsCache.clear();
     const inc = this.included();
     if (!inc.length) { toast('All chapters are switched off for this book'); return; }
@@ -1841,6 +1867,7 @@ const P = {
     this.curId = 'u' + tok;
     if (unit.scene) { Out.silence(this.curId, 1000); return; }
     const md = this.tone(), k = this.key(unit.text), speed = clamp(S.speed * md.pace, 0.4, 2.5);
+    if (silentRef(unit.text, md)) { Out.silence(this.curId, 1); return; }
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
     setFx(Pro.on ? md : null);
@@ -1863,7 +1890,8 @@ const P = {
       const spans = this.qSents[i] = sentenceSpans(un.text), quoted = quoteFlags(un.text, spans);
       spans.forEach(([a, b], k) => {
         const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k, i * 7 + k);
-        Out.phoneSay(base + '_' + k, un.text.slice(a, b).trim(), clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, last ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
+        const sx = un.text.slice(a, b).trim(), mute = silentRef(sx, md);
+        Out.phoneSay(base + '_' + k, mute ? '' : sx, clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, last && !mute ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
         first = false;
       });
     }
@@ -2348,7 +2376,7 @@ const Maker = {
     return meta.include.map((on, i) => on ? i : -1).filter(i => i >= 0)
       .map((ch, n) => ({ ch, n, title: content.chapters[ch].title, units: buildUnits(content.chapters[ch].paras, MAX_UNIT) }));
   },
-  keyFor(meta, text) { const n = Narr.forBook(meta); return toneKey(text, n, toneFor(n, meta.mood, meta.emo)); },
+  keyFor(meta, text) { const n = Narr.forBook(meta); return toneKey(text, n, bookTone(n, meta)); },
   statusText() { const j = this.job; if (!j) return ''; return j.state === 'paused' ? 'paused · ' + j.pct + '%' : j.state === 'done' ? 'done' : `${j.pct}% · chapter ${j.chNow}/${j.chTotal}`; },
   async sheet(meta) {
     meta = (await DB.get('meta', meta.id)) || meta;   // always use the latest narrator/mood
@@ -2396,7 +2424,7 @@ const Maker = {
     this.pend.delete(ev.reqId);
     ev.ok ? p.res(ev) : p.rej(Object.assign(new Error(ev.msg || 'failed'), { cancelled: ev.msg === 'cancelled' }));
   },
-  gen(meta, text, key) { const n = Narr.forBook(meta), t = toneFor(n, meta.mood, meta.emo); return this.call('clonePrepare', key, sayText(text, t), n.voice, t.temp); },
+  gen(meta, text, key) { const n = Narr.forBook(meta), t = bookTone(n, meta); return this.call('clonePrepare', key, sayText(text, t), n.voice, t.temp); },
   update() {
     const j = this.job; if (!j) return;
     j.pct = Math.floor(j.done / Math.max(1, j.total) * 100);
@@ -2417,7 +2445,7 @@ const Maker = {
     let where = '';
     try {
       if (Narr.forBook(meta).phone) {
-        const n = Narr.forBook(meta), tn = toneFor(n, meta.mood, meta.emo), fx = Pro.on ? fxJson(tn) : '';
+        const n = Narr.forBook(meta), tn = bookTone(n, meta), fx = Pro.on ? fxJson(tn) : '';
         for (const c of plan) {
           j.chNow = c.n + 1;
           const count = c.units.filter(u => !u.scene).length;
@@ -2426,8 +2454,9 @@ const Maker = {
           const items = c.units.flatMap(u => {
             if (u.scene) return [{ gap: 1200 }];
             const spans = sentenceSpans(u.text), q = quoteFlags(u.text, spans);
-            return spans.map(([a, b2], i) => {
+            return spans.flatMap(([a, b2], i) => {
               const st = sentenceTone(u.text.slice(a, b2), q[i], tn.k, i), last = i === spans.length - 1;
+              if (silentRef(u.text.slice(a, b2), tn)) return [];
               return { t: sayText(u.text.slice(a, b2).trim(), tn), p: clamp(tn.phonePitch * st.p, 0.5, 2), r: clamp(tn.pace * st.r, 0.4, 2.5), v: n.tts, gap: last ? Math.round((u.head ? 800 : 300) * tn.gap) : 0 };
             });
           });
@@ -2465,7 +2494,7 @@ const Maker = {
         }
         if (exported.has(c.ch)) continue;
         j.msg = `Saving chapter ${c.n + 1} of ${plan.length}…`; this.update();
-        const tn = toneFor(Narr.forBook(meta), meta.mood, meta.emo), fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
+        const tn = bookTone(Narr.forBook(meta), meta), fname = `${String(c.n + 1).padStart(2, '0')} - ${c.title}`;
         const ev = NATIVE.exportChapterFx ? await this.call('exportChapterFx', meta.title, fname, JSON.stringify(items), tn.pitch, Pro.on ? fxJson(tn) : '') : await this.call('exportChapter', meta.title, fname, JSON.stringify(items), tn.pitch);
         where = ev.where; exported.add(c.ch);
         LS.set('make.' + meta.id, { eng, exported: [...exported] });
@@ -2673,6 +2702,7 @@ async function importFile(file, extra = {}, quiet) {
       words: book.chapters.reduce((a, c) => a + c.paras.reduce((b, p) => b + p.split(/\s+/).length, 0), 0),
       narrator: S.narrator, pos: null, progress: 0,
       subject: book.subject || '', description: book.description || '',
+      skipRefs: looksReferenced(book.chapters),
       ...extra,
     };
     const first = meta.include.indexOf(true); meta.pos = { ch: first < 0 ? 0 : first, p: 0 };
@@ -2910,6 +2940,7 @@ async function openBook(id) {
     <label class="f">Mood <span style="font-weight:400">· how ${esc(Narr.forBook(m).name)} sounds</span></label>
     <div class="moodrow" id="bkMood">${moodButtons(moodOf(m.mood).id)}</div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
+    <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
       <div class="ch ${m.include[i] ? '' : 'off'}" data-i="${i}"><div class="grow"><div class="n">${esc(c.title)}</div>${c.why ? `<div class="why">${esc(c.why)}</div>` : ''}</div><button class="tog ${m.include[i] ? 'on' : ''}"></button></div>`).join('')}</div>
@@ -2917,6 +2948,11 @@ async function openBook(id) {
   $('#bkPlay').onclick = () => P.open(id, true);
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
   $('#bkPrep')?.addEventListener('click', async () => { if (!P.meta || P.meta.id !== id) await P.open(id, false); showPlayer(false); Prep.sheet(); });
+  $('#bkRefs').onclick = async e => {
+    m.skipRefs = !m.skipRefs; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
+    if (P.meta?.id === id) { P.meta.skipRefs = m.skipRefs; if (P.playing) P.restartUnit(); }
+    toast(m.skipRefs ? 'Verse numbers won\'t be read out' : 'Verse numbers will be read out');
+  };
   $('#bkEmo').oninput = e => { $('#bkEmoO').textContent = emoLabel(+e.target.value); };
   $('#bkEmo').onchange = async e => {
     m.emo = +e.target.value; await DB.put('meta', m);
