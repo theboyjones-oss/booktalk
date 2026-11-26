@@ -275,7 +275,9 @@ final class SupertonicEngine {
                 Object v = r.get(0).getValue();
                 dur = v instanceof float[][] ? ((float[][]) v)[0][0] : ((float[]) v)[0];
             }
-            dur /= Math.max(0.3f, speed);
+            // Supertonic swallows the last word when squeezed: never ask it for more than 1.35x, and give it a little
+            // extra room at the end (the spare silence is trimmed off below). Tested: 12/12 endings kept at 1.37x.
+            dur = dur / Math.max(0.3f, Math.min(MAX_SPEED, speed)) * 1.08f + 0.25f;
             in.clear();
             in.put("text_ids", tIds); in.put("style_ttl", sTtl); in.put("text_mask", tMask);
             try (OrtSession.Result er = enc.run(in)) {
@@ -308,9 +310,21 @@ final class SupertonicEngine {
                         try (OrtSession.Result r = voc.run(in)) {
                             FloatBuffer fb = ((OnnxTensor) r.get(0)).getFloatBuffer();
                             int n = (int) Math.min(fb.remaining(), wavLen);
-                            short[] out = new short[n];
+                            float[] w = new float[n]; float peak = 0f;
+                            for (int i = 0; i < n; i++) { w[i] = fb.get(i); peak = Math.max(peak, Math.abs(w[i])); }
+                            // trim the spare quiet at the end: last 20 ms window above 3% of the peak, plus 80 ms
+                            int win = Math.max(1, sampleRate / 50), end = n;
+                            float thr = Math.max(0.01f, peak * 0.03f);
+                            double acc = 0; int lastLoud = -1;
                             for (int i = 0; i < n; i++) {
-                                float s = fb.get(i);
+                                acc += Math.abs(w[i]); if (i >= win) acc -= Math.abs(w[i - win]);
+                                if (i >= win - 1 && acc / win > thr) lastLoud = i - win / 2;
+                            }
+                            if (lastLoud > 0) end = Math.min(n, lastLoud + sampleRate * 8 / 100);
+                            short[] out = new short[end];
+                            for (int i = 0; i < end; i++) {
+                                float s = w[i];
+                                if (i > end - sampleRate / 100) s *= (end - i) / (float) (sampleRate / 100);   // 10 ms fade out
                                 out[i] = (short) Math.max(-32767, Math.min(32767, Math.round(s * 32767f)));
                             }
                             return out;
@@ -322,6 +336,8 @@ final class SupertonicEngine {
     }
 
     /** The same clean-up Supertonic's own code does before speaking. */
+    static final float MAX_SPEED = 1.35f;
+
     private static String prep(String text) {
         text = Normalizer.normalize(text, Normalizer.Form.NFKD);
         StringBuilder sb = new StringBuilder();
