@@ -1,0 +1,21 @@
+name: Probe Bible formats
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and show verse formats
+        run: |
+          UA="BookTalk/6 (Android ebook reader; +https://github.com/theboyjones-oss/booktalk)"
+          for n in 10 30 8300 1581 8001; do
+            echo "================= PG $n"
+            curl -sSL -A "$UA" -o b$n.html "https://www.gutenberg.org/cache/epub/$n/pg$n-images.html" || echo "html fail"
+            python3 - "$n" <<'PY'
+          import re,sys,html
+          n=sys.argv[1]; s=open(f'b{n}.html',encoding='utf8',errors='replace').read()
+          t=re.search(r'<title>(.*?)</title>',s,re.S); print('TITLE', t and t.group(1).strip()[:100])
+          i=s.find('In the beginning')
+          if i<0: i=s.find('beginning')
+          print('RAW HTML:'); print(s[max(0,i-700):i+900])
+          PY
+          done
