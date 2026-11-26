@@ -1427,7 +1427,7 @@ const CV = {
   all() { return LS.get('cvoices', []); },
   get(id) { return this.all().find(v => v.id === id); },
   put(v) { const l = this.all(), i = l.findIndex(x => x.id === v.id); if (i >= 0) l[i] = v; else l.push(v); LS.set('cvoices', l); },
-  del(id) { if (id === SLOW.id) LS.set('slowGone', true); LS.set('cvoices', this.all().filter(v => v.id !== id)); },
+  del(id) { const bi = BUILTIN_VOICES.find(b => b.id === id); if (bi) LS.set(bi.gone, true); LS.set('cvoices', this.all().filter(v => v.id !== id)); },
   mine() { return this.all().filter(v => !v.builtin); },   // voices the user made (the built-in "Slow" doesn't count)
   code(v) { return 'BOOKTALK-VOICE:' + btoa(unescape(encodeURIComponent(JSON.stringify({ n: v.name, b: v.base, t: v.tune, e: v.emoji })))); },
   parse(code) {
@@ -1436,23 +1436,31 @@ const CV = {
   },
 };
 
-/* "Slow": a built-in deep, slow, warm storyteller made with the Voice Tuner. Uses the deep AI voices when they're
-   installed (Edward blended with Ben), otherwise a male phone voice. Can be edited or deleted like any of your voices. */
+/* Built-in voices made with the Voice Tuner. They use the deep AI voices when installed, otherwise a male phone voice,
+   and can be edited or deleted like any of your voices (edited ones are left alone; deleted ones don't come back).
+   Slow: deep, slow, warm storyteller · Burt: rich, resonant stage orator */
+const BUILTIN_VOICES = [
+  { id: 'cv_slow', name: 'Slow', emoji: '🐢', gone: 'slowGone',
+    TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 0, effect: 'none', blend: { M5: 70, M2: 30 } } },
+  { id: 'cv_burt', name: 'Burt', emoji: '🎭', gone: 'burtGone',
+    TUNE: { emo: { serious: 55, excited: 15, calm: 10 }, pitch: -2, speed: 0.93, live: 0.15, gap: 1.4, spause: 3, warmth: 40, clarity: 20, room: 0, effect: 'none', blend: { M5: 85, M2: 15 } } },
+];
 const SLOW = {
-  id: 'cv_slow',
-  TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 0, effect: 'none', blend: { M5: 70, M2: 30 } },
+  isBuiltin: id => BUILTIN_VOICES.some(b => b.id === id),
   phoneBase() {
     const l = Phone.list(), male = ['en-gb-x-rjs', 'en-gb-x-gbd', 'en-gb-x-gbc', 'en-us-x-iom', 'en-us-x-tpd', 'en-us-x-iol', 'en-au-x-aub', 'en-au-x-aud'];
     for (const m of male) { const v = l.find(x => x.tts.toLowerCase().startsWith(m) && !x.network); if (v) return v.id; }
     return Phone.best();
   },
   ensure() {
-    if (LS.get('slowGone', false)) return;
-    const cur = CV.get(this.id), aiOk = STV.on() && STV.installed();
-    if (cur && !cur.auto) return;                                   // the user has tuned it themselves: leave it alone
-    const base = aiOk ? 'st:M5' : this.phoneBase();
-    if (cur && cur.base === base && cur.tune?.room === this.TUNE.room && cur.tune?.pitch === this.TUNE.pitch) return;
-    CV.put({ id: this.id, name: 'Slow', emoji: '🐢', base, tune: Object.assign(TUNE0(), JSON.parse(JSON.stringify(this.TUNE))), builtin: true, auto: true });
+    const aiOk = STV.on() && STV.installed(), base = aiOk ? 'st:M5' : this.phoneBase();
+    for (const b of BUILTIN_VOICES) {
+      if (LS.get(b.gone, false)) continue;
+      const cur = CV.get(b.id);
+      if (cur && !cur.auto) continue;                               // tuned by you: leave it alone
+      if (cur && cur.base === base && JSON.stringify(cur.tune) === JSON.stringify(Object.assign(TUNE0(), b.TUNE))) continue;
+      CV.put({ id: b.id, name: b.name, emoji: b.emoji, base, tune: Object.assign(TUNE0(), JSON.parse(JSON.stringify(b.TUNE))), builtin: true, auto: true });
+    }
   },
 };
 
@@ -2328,7 +2336,7 @@ const Tuner = {
     if (why) { Pro.sheet(why); return; }
     if (!d.name) { this.randomName(); }
     const v = { id: (!asCopy && d.id) || 'cv_' + uid(), name: asCopy ? d.name + ' (copy)' : d.name, emoji: d.emoji, base: d.base, tune: JSON.parse(JSON.stringify(d.tune)), made: Date.now() };
-    if (v.id === SLOW.id) v.builtin = true;   // edited by you now, so it won't be reset, but still doesn't use up a free slot
+    if (SLOW.isBuiltin(v.id)) v.builtin = true;   // edited by you now, so it won't be reset, but still doesn't use up a free slot
     CV.put(v); d.id = v.id; d.name = v.name;
     this.render();
     const inBook = P.meta && P.meta.narrator !== v.id;
