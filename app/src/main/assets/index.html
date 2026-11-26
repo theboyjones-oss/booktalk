@@ -1480,17 +1480,24 @@ const BUILTIN_VOICES = [
     TUNE: { emo: { calm: 55, serious: 25 }, pitch: -2.5, speed: 0.88, live: -0.15, gap: 1.6, spause: 2, warmth: 55, clarity: -10, room: 0, effect: 'none', blend: { M5: 70, M2: 30 } } },
   { id: 'cv_burt', name: 'Burt', emoji: '🎭', gone: 'burtGone',
     TUNE: { emo: { serious: 55, excited: 15, calm: 10 }, pitch: -2, speed: 0.93, live: 0.15, gap: 1.4, spause: 3, warmth: 40, clarity: 20, room: 0, effect: 'none', blend: { M5: 85, M2: 15 } } },
+  // Fairy tales: a warm, gentle storyteller and a cosy, grandfatherly one
+  { id: 'cv_willow', name: 'Willow', emoji: '🧚', gone: 'willowGone', ai: 'st:F2', female: true,
+    TUNE: { emo: { happy: 30, calm: 35, excited: 15 }, pitch: 0.5, speed: 0.9, live: 0.35, gap: 1.35, spause: 2, warmth: 35, clarity: 10, room: 0, effect: 'none', blend: { F2: 65, F1: 35 } } },
+  { id: 'cv_bramble', name: 'Bramble', emoji: '🦉', gone: 'brambleGone', ai: 'st:M1',
+    TUNE: { emo: { calm: 40, happy: 25, excited: 15 }, pitch: -1, speed: 0.88, live: 0.3, gap: 1.4, spause: 2, warmth: 45, clarity: 0, room: 0, effect: 'none', blend: { M1: 60, M4: 40 } } },
 ];
 const SLOW = {
   isBuiltin: id => BUILTIN_VOICES.some(b => b.id === id),
-  phoneBase() {
-    const l = Phone.list(), male = ['en-gb-x-rjs', 'en-gb-x-gbd', 'en-gb-x-gbc', 'en-us-x-iom', 'en-us-x-tpd', 'en-us-x-iol', 'en-au-x-aub', 'en-au-x-aud'];
+  phoneBase(female) {
+    const l = Phone.list(), male = female ? ['en-gb-x-gba', 'en-gb-x-gbg', 'en-gb-x-fis', 'en-gb-x-gbb', 'en-us-x-sfg', 'en-us-x-iob', 'en-au-x-afh', 'en-au-x-aua']
+      : ['en-gb-x-rjs', 'en-gb-x-gbd', 'en-gb-x-gbc', 'en-us-x-iom', 'en-us-x-tpd', 'en-us-x-iol', 'en-au-x-aub', 'en-au-x-aud'];
     for (const m of male) { const v = l.find(x => x.tts.toLowerCase().startsWith(m) && !x.network); if (v) return v.id; }
     return Phone.best();
   },
   ensure() {
-    const aiOk = STV.on() && STV.installed(), base = aiOk ? 'st:M5' : this.phoneBase();
+    const aiOk = STV.on() && STV.installed();
     for (const b of BUILTIN_VOICES) {
+      const base = aiOk ? (b.ai || 'st:M5') : this.phoneBase(b.female);
       if (LS.get(b.gone, false)) continue;
       const cur = CV.get(b.id);
       if (cur && !cur.auto) continue;                               // tuned by you: leave it alone
