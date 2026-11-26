@@ -351,6 +351,7 @@ nav.tabs button{font-size:11px}
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="emoR" min="0" max="200" step="10"><output id="emoO"></output></div>
     <div class="emorow"><span>🔊 Echo</span><input type="range" id="echoR" min="0" max="100" step="5"><output id="echoO"></output></div>
+    <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="pauseR" min="0" max="100" step="1"><output id="pauseO"></output></div>
     <div class="chips">
       <button class="chip" id="chMood"></button>
       <button class="chip" id="chSpeed"></button>
@@ -1404,6 +1405,12 @@ function withEcho(t, echo) {
 }
 // What the sound studio should do. Echo works for everyone; the other studio effects need Pro.
 const fxFor = t => Pro.on ? fxJson(t) : (t?.echo ? JSON.stringify({ room: t.echo }) : '');
+// Pause slider (0–100, 50 = normal). Below 50 shortens the pauses down to none; above 50 adds silence after
+// every sentence (up to 0.8 s) and lengthens paragraph pauses (up to +1 s).
+const pauseV = meta => meta?.pause ?? 50;
+const paraPause = (base, meta) => { const v = pauseV(meta); return Math.round(v <= 50 ? base * v / 50 : base + (v - 50) * 20); };
+const sentPause = meta => Math.max(0, (pauseV(meta) - 50) * 16);
+const pauseLabel = v => v === 50 ? 'Normal' : v < 15 ? 'Minimal' : v < 50 ? 'Shorter' : v <= 80 ? 'Longer' : 'Very long';
 const echoLabel = v => v <= 0 ? 'None' : v <= 20 ? 'Light' : v <= 50 ? 'Room' : v <= 80 ? 'Hall' : 'Cathedral';
 function bookTone(nar, meta) {
   let t = withEcho(toneFor(nar, meta?.mood, meta?.emo ?? 100), meta?.echo);
@@ -1957,6 +1964,10 @@ const P = {
   tone() { return bookTone(this.narrator(), this.meta); },
   key(text) { return toneKey(text, this.narrator(), this.tone()); },
   isPhone() { return !!this.narrator().phone; },
+  async changePause(v) {
+    this.meta.pause = v; await DB.put('meta', this.meta);
+    renderPlayerMeta(); if (this.playing) this.restartUnit();
+  },
   async changeEcho(v) {
     this.meta.echo = v; await DB.put('meta', this.meta);
     renderPlayerMeta(); if (this.playing) this.restartUnit();
@@ -2038,7 +2049,7 @@ const P = {
     Sync.prepare(unit, this.curId, speed);
     setStatus(NATIVE.cacheHas(k) ? 'reading' : 'loading');
     if (NATIVE?.setFx) NATIVE.setFx(fxFor(md));
-    NATIVE.clonePlay(this.curId, k, sayText(unit.text, md), this.narrator().voice, md.temp, speed, md.pitch, Math.round((unit.head ? 650 : 120) * md.gap));
+    NATIVE.clonePlay(this.curId, k, sayText(unit.text, md), this.narrator().voice, md.temp, speed, md.pitch, paraPause((unit.head ? 650 : 120) * md.gap, this.meta) + sentPause(this.meta));
     this.ahead(S.prefetch + 1);
   },
   /* Phone voices: hand the engine a long run of passages at once (as BibleTalk does) so it never waits between them */
@@ -2046,7 +2057,7 @@ const P = {
   phoneQueue(tok, flush) {
     const md = this.tone(), n = this.narrator(), fx = fxFor(md);
     const rate = clamp(S.speed * md.pace, 0.4, 2.5), pitch = md.phonePitch;
-    const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24);
+    const from = flush ? this.u : this.qEnd + 1, to = Math.min(this.units.length - 1, from + 24), sp = sentPause(this.meta);
     if (from > to) return;
     this.qSents = flush ? {} : (this.qSents || {});
     let first = flush;
@@ -2058,7 +2069,7 @@ const P = {
       spans.forEach(([a, b], k) => {
         const last = k === spans.length - 1, st = un.head ? { p: 1, r: 1 } : sentenceTone(un.text.slice(a, b), quoted[k], md.k, i * 7 + k);
         const sx = un.text.slice(a, b).trim(), mute = silentRef(sx, md);
-        Out.phoneSay(base + '_' + k, mute ? '' : sx, clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, last && !mute ? Math.round((un.head ? 650 : 120) * md.gap) : 0, first, md, fx);
+        Out.phoneSay(base + '_' + k, mute ? '' : sx, clamp(pitch * st.p, 0.5, 2), clamp(rate * st.r, 0.4, 2.5), n.tts, mute ? 0 : (last ? paraPause((un.head ? 650 : 120) * md.gap, this.meta) : 0) + sp, first, md, fx);
         first = false;
       });
     }
@@ -2627,7 +2638,7 @@ const Maker = {
             return spans.flatMap(([a, b2], i) => {
               const st = sentenceTone(u.text.slice(a, b2), q[i], tn.k, i), last = i === spans.length - 1;
               if (silentRef(u.text.slice(a, b2), tn)) return [];
-              return { t: sayText(u.text.slice(a, b2).trim(), tn), p: clamp(tn.phonePitch * st.p, 0.5, 2), r: clamp(tn.pace * st.r, 0.4, 2.5), v: n.tts, gap: last ? Math.round((u.head ? 800 : 300) * tn.gap) : 0 };
+              return { t: sayText(u.text.slice(a, b2).trim(), tn), p: clamp(tn.phonePitch * st.p, 0.5, 2), r: clamp(tn.pace * st.r, 0.4, 2.5), v: n.tts, gap: (last ? paraPause((u.head ? 800 : 300) * tn.gap, meta) : 0) + sentPause(meta) };
             });
           });
           j.msg = `Chapter ${c.n + 1} of ${plan.length}: ${c.title}`; j.base = j.done; j.chCount = count; this.update();
@@ -3109,6 +3120,7 @@ async function openBook(id) {
     </div>
     <div class="emorow"><span>🎭 Emotion</span><input type="range" id="bkEmo" min="0" max="200" step="10" value="${m.emo ?? 100}"><output id="bkEmoO">${emoLabel(m.emo ?? 100)}</output></div>
     <div class="emorow"><span>🔊 Echo</span><input type="range" id="bkEcho" min="0" max="100" step="5" value="${m.echo ?? voiceEcho(Narr.forBook(m))}"><output id="bkEchoO">${echoLabel(m.echo ?? voiceEcho(Narr.forBook(m)))}</output></div>
+    <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="bkPause" min="0" max="100" step="1" value="${pauseV(m)}"><output id="bkPauseO">${pauseLabel(pauseV(m))}</output></div>
     <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
@@ -3121,6 +3133,11 @@ async function openBook(id) {
     m.skipRefs = !m.skipRefs; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
     if (P.meta?.id === id) { P.meta.skipRefs = m.skipRefs; if (P.playing) P.restartUnit(); }
     toast(m.skipRefs ? 'Verse numbers won\'t be read out' : 'Verse numbers will be read out');
+  };
+  $('#bkPause').oninput = e => { $('#bkPauseO').textContent = pauseLabel(+e.target.value); };
+  $('#bkPause').onchange = async e => {
+    m.pause = +e.target.value; await DB.put('meta', m);
+    if (P.meta?.id === id) { P.meta.pause = m.pause; renderPlayerMeta(); if (P.playing) P.restartUnit(); }
   };
   $('#bkEcho').oninput = e => { $('#bkEchoO').textContent = echoLabel(+e.target.value); };
   $('#bkEcho').onchange = async e => {
@@ -3236,6 +3253,8 @@ $('#emoR').oninput = e => { $('#emoO').textContent = emoLabel(+e.target.value); 
 $('#emoR').onchange = e => P.changeEmo(+e.target.value);
 $('#echoR').oninput = e => { $('#echoO').textContent = echoLabel(+e.target.value); };
 $('#echoR').onchange = e => P.changeEcho(+e.target.value);
+$('#pauseR').oninput = e => { $('#pauseO').textContent = pauseLabel(+e.target.value); };
+$('#pauseR').onchange = e => P.changePause(+e.target.value);
 function renderPlayerMeta() {
   if (!P.meta) return;
   $('#plTitle').textContent = P.meta.title;
@@ -3244,6 +3263,7 @@ function renderPlayerMeta() {
   $('#chMood').innerHTML = `🗣️ ${esc(P.narrator().name)}`;
   { const v = P.meta.emo ?? 100; $('#emoR').value = v; $('#emoO').textContent = emoLabel(v); }
   { const v = P.meta.echo ?? voiceEcho(P.narrator()); $('#echoR').value = v; $('#echoO').textContent = echoLabel(v); }
+  { const v = pauseV(P.meta); $('#pauseR').value = v; $('#pauseO').textContent = pauseLabel(v); }
   $('#chSpeed').textContent = S.speed + '×';
   renderSleepChip(); renderPlayState();
   if (!P.playing) setStatus('');
