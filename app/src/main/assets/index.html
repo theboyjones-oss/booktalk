@@ -3203,7 +3203,7 @@ async function openBook(id) {
     <div class="emorow"><span>🎵 Pitch</span><input type="range" id="bkPit" min="0" max="100" step="1" value="${pitchV(m)}"><output id="bkPitO">${pitchLabel(pitchV(m))}</output></div>
     <div class="emorow"><span>🐇 Speed</span><input type="range" id="bkSpd" min="0" max="100" step="1" value="${speedV(m)}"><output id="bkSpdO">${speedLabel(speedV(m))}</output></div>
     <div class="emorow"><span>⏸️ Pauses</span><input type="range" id="bkPause" min="0" max="100" step="1" value="${pauseV(m)}"><output id="bkPauseO">${pauseLabel(pauseV(m))}</output></div>
-    <div class="card set" style="margin-top:12px"><div class="grow">🔢 Don't read verse numbers<div class="small muted">Skips references like 01:12:14, 3:16, [12] and verse numbers at the start of lines. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div>
+    <div class="card chlist" style="padding:4px 14px;margin-top:12px"><div class="ch" id="bkRefsRow" style="cursor:pointer"><div class="grow"><div class="n">🔢 Don't read verse numbers</div><div class="why">Skips references like 01:12:14, 3:16, [12] and verse numbers. They stay on the page.</div></div><button class="tog ${m.skipRefs ? 'on' : ''}" id="bkRefs"></button></div></div>
     <h2>What gets read · ${inc} of ${m.chapters.length} sections</h2>
     <div class="card chlist" style="padding:4px 14px">${m.chapters.map((c, i) => `
       <div class="ch ${m.include[i] ? '' : 'off'}" data-i="${i}"><div class="grow"><div class="n">${esc(c.title)}</div>${c.why ? `<div class="why">${esc(c.why)}</div>` : ''}</div><button class="tog ${m.include[i] ? 'on' : ''}"></button></div>`).join('')}</div>
@@ -3211,8 +3211,9 @@ async function openBook(id) {
   $('#bkPlay').onclick = () => P.open(id, true);
   $('#bkMake')?.addEventListener('click', () => Maker.sheet(m));
   $('#bkPrep')?.addEventListener('click', async () => { if (!P.meta || P.meta.id !== id) await P.open(id, false); showPlayer(false); Prep.sheet(); });
-  $('#bkRefs').onclick = async e => {
-    m.skipRefs = !m.skipRefs; m.refsChk = 2; await DB.put('meta', m); e.currentTarget.classList.toggle('on', m.skipRefs);
+  $('#bkRefsRow').onclick = async () => {
+    m.skipRefs = !m.skipRefs; m.refsChk = 2; $('#bkRefs').classList.toggle('on', m.skipRefs);   // update the switch first (it used to fail here)
+    await DB.put('meta', m);
     if (P.meta?.id === id) { P.meta.skipRefs = m.skipRefs; if (P.playing) P.restartUnit(); }
     toast(m.skipRefs ? 'Verse numbers won\'t be read out' : 'Verse numbers will be read out');
   };
@@ -3242,7 +3243,7 @@ async function openBook(id) {
     if (P.meta?.id === id) await P.changeNarrator(nid);
     openBook(id); toast(Narr.get(nid).name + ' will read this book');
   } });
-  $$('.chlist .ch').forEach(row => row.onclick = async () => {
+  $$('.chlist .ch[data-i]').forEach(row => row.onclick = async () => {
     const i = +row.dataset.i; m.include[i] = !m.include[i];
     if (!m.include.some(Boolean)) { m.include[i] = true; toast('At least one section must be read'); return; }
     await DB.put('meta', m);
