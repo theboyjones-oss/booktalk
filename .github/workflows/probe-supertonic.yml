@@ -17,15 +17,16 @@ jobs:
           find st -type f | xargs ls -la
       - name: Probe
         run: |
-          nproc; lscpu | grep -i "model name"
+          mkdir -p out; nproc; lscpu | grep -i "model name"
           python tools/stprobe/probe.py st out 2>&1 | tee out/console.txt || true
           lscpu | grep -i "model name" >> out/results.txt
           cd out && for f in *.wav; do ffmpeg -loglevel error -y -i "$f" -b:a 96k "${f%.wav}.mp3"; done
           cp ../st/LICENSE LICENSE-supertonic3.txt 2>/dev/null || true
-          (cd int8 && tar czf ../supertonic3-int8.tar.gz .)
+          (cd int8 && tar czf ../supertonic3-int8.tar.gz .) || true
           (cd ../st && tar czf ../out/voice_styles.tar.gz voice_styles)
       - name: Publish
+        if: always()
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           cd out
-          gh release create "probe-st-${{ github.run_number }}" --prerelease --title "Supertonic probe ${{ github.run_number }}" --notes-file results.txt results.txt *.mp3 supertonic3-int8.tar.gz voice_styles.tar.gz LICENSE-supertonic3.txt
+          gh release create "probe-st-${{ github.run_number }}" --prerelease --title "Supertonic probe ${{ github.run_number }}" --notes-file results.txt $(ls results.txt console.txt *.mp3 supertonic3-int8.tar.gz voice_styles.tar.gz LICENSE-supertonic3.txt 2>/dev/null)
