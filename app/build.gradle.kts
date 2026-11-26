@@ -11,8 +11,8 @@ android {
         applicationId = "com.booktalk.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 40
-        versionName = "5.7"
+        versionCode = 41
+        versionName = "5.8"
         // On-device Kokoro voices need 64-bit ARM (all recent phones)
         ndk { abiFilters += listOf("arm64-v8a") }
     }
