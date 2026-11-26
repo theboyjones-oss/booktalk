@@ -383,7 +383,7 @@ final class SupertonicEngine {
                 double secs = (System.nanoTime() - t0) / 1e9, audio = a.length / (double) sampleRate;
                 double x = audio / Math.max(0.01, secs);
                 if (x > bestX) { bestX = x; best = th; }
-            } catch (Exception ignored) { }
+            } catch (Throwable ignored) { }
         }
         prefs.edit().putInt("threads", best).putFloat("speedX", (float) bestX).apply();
         close();

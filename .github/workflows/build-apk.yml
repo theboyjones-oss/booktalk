@@ -26,9 +26,18 @@ jobs:
           curl -sSL -o /tmp/sherpa.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/v$V/sherpa-onnx-v$V-android.tar.bz2
           mkdir -p /tmp/sherpa && tar xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa ./jniLibs/arm64-v8a/
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          # sherpa's ONNX Runtime (newer) is shipped and serves both engines: it also runs code built for older versions
-          cp /tmp/sherpa/jniLibs/arm64-v8a/libsherpa-onnx-jni.so /tmp/sherpa/jniLibs/arm64-v8a/libonnxruntime.so app/src/main/jniLibs/arm64-v8a/
-          strings -n 5 app/src/main/jniLibs/arm64-v8a/libonnxruntime.so | grep -m1 -E "^1\.[0-9]+\.[0-9]+$" > /tmp/ortver.txt; cat /tmp/ortver.txt
+          # sherpa gets its own private copy of ONNX Runtime under a different name (same length, so nothing in the file moves);
+          # the AI voices use the full ONNX Runtime from the onnxruntime-android package
+          python3 - <<'PY'
+          import os
+          src = '/tmp/sherpa/jniLibs/arm64-v8a/'; dst = 'app/src/main/jniLibs/arm64-v8a/'
+          old, new = b'libonnxruntime.so\x00', b'libsherpa-ortx.so\x00'
+          for f, out in (('libonnxruntime.so', 'libsherpa-ortx.so'), ('libsherpa-onnx-jni.so', 'libsherpa-onnx-jni.so')):
+              b = open(src + f, 'rb').read()
+              assert b.count(old) == 1, (f, b.count(old))
+              open(dst + out, 'wb').write(b.replace(old, new))
+          PY
+          readelf -d app/src/main/jniLibs/arm64-v8a/libsherpa-onnx-jni.so | grep NEEDED
       - name: Build debug APK (compile check)
         run: |
           set -o pipefail
@@ -46,14 +55,14 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
-      - name: Check which ONNX Runtime was packaged
+      - name: Check the speech libraries were packaged correctly
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           mkdir -p /tmp/apkcheck && cd /tmp/apkcheck && unzip -o -q "$GITHUB_WORKSPACE/$APK" 'lib/arm64-v8a/*'
           ls -la lib/arm64-v8a/
-          GOT=$(strings -n 5 lib/arm64-v8a/libonnxruntime.so | grep -m1 -E "^1\.[0-9]+\.[0-9]+$"); WANT=$(cat /tmp/ortver.txt)
-          echo "packaged ONNX Runtime: $GOT (sherpa needs $WANT)"
-          [ "$GOT" = "$WANT" ] || { echo "Wrong ONNX Runtime packaged"; exit 1; }
+          test -f lib/arm64-v8a/libonnxruntime.so && test -f lib/arm64-v8a/libonnxruntime4j_jni.so && test -f lib/arm64-v8a/libsherpa-ortx.so
+          readelf -d lib/arm64-v8a/libsherpa-onnx-jni.so | grep -q "libsherpa-ortx.so"
+          echo "AI voices runtime: $(strings -n 5 lib/arm64-v8a/libonnxruntime.so | grep -m1 -E '^1\.[0-9]+\.[0-9]+$')  cloner runtime: $(strings -n 5 lib/arm64-v8a/libsherpa-ortx.so | grep -m1 -E '^1\.[0-9]+\.[0-9]+$')"
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk BookTalk.apk
       - name: Read app version

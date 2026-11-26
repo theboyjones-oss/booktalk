@@ -507,7 +507,7 @@ public class Speaker {
                     if (it == null) continue;
                     if (it.text != null && !it.text.trim().isEmpty()) {
                         try { it.pcm = renderAny(renderer(), it.text, it.pitch, it.rate, it.voice); }
-                        catch (Exception e) { it.err = String.valueOf(e.getMessage()); }
+                        catch (Throwable e) { it.err = String.valueOf(e.getMessage() != null ? e.getMessage() : e); }
                     }
                     if (s.gen != gen) break;
                     s.ready.add(it);
