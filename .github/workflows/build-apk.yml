@@ -20,6 +20,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Fetch sherpa-onnx native libraries (Pocket voice cloner)
+        run: |
+          V=1.13.8
+          curl -sSL -o /tmp/sherpa.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/v$V/sherpa-onnx-v$V-android.tar.bz2
+          mkdir -p /tmp/sherpa && tar xjf /tmp/sherpa.tar.bz2 -C /tmp/sherpa ./jniLibs/arm64-v8a/
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          # sherpa's ONNX Runtime (newer) is shipped and serves both engines: it also runs code built for older versions
+          cp /tmp/sherpa/jniLibs/arm64-v8a/libsherpa-onnx-jni.so /tmp/sherpa/jniLibs/arm64-v8a/libonnxruntime.so app/src/main/jniLibs/arm64-v8a/
+          strings -n 5 app/src/main/jniLibs/arm64-v8a/libonnxruntime.so | grep -m1 -E "^1\.[0-9]+\.[0-9]+$" > /tmp/ortver.txt; cat /tmp/ortver.txt
       - name: Build debug APK (compile check)
         run: |
           set -o pipefail
@@ -37,6 +46,14 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
+      - name: Check which ONNX Runtime was packaged
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          mkdir -p /tmp/apkcheck && cd /tmp/apkcheck && unzip -o -q "$GITHUB_WORKSPACE/$APK" 'lib/arm64-v8a/*'
+          ls -la lib/arm64-v8a/
+          GOT=$(strings -n 5 lib/arm64-v8a/libonnxruntime.so | grep -m1 -E "^1\.[0-9]+\.[0-9]+$"); WANT=$(cat /tmp/ortver.txt)
+          echo "packaged ONNX Runtime: $GOT (sherpa needs $WANT)"
+          [ "$GOT" = "$WANT" ] || { echo "Wrong ONNX Runtime packaged"; exit 1; }
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk BookTalk.apk
       - name: Read app version

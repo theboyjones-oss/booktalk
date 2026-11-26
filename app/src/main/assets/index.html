@@ -269,6 +269,9 @@ nav.tabs button{font-size:11px}
 .stcard{margin-bottom:12px;background:linear-gradient(135deg,rgba(90,140,255,.16),rgba(255,138,92,.14));border:1px solid rgba(120,150,255,.4)}
 .stbar{height:8px;border-radius:4px;background:var(--s3);overflow:hidden;margin-top:12px} .stbar i{display:block;height:100%;background:linear-gradient(90deg,#6f8cff,var(--ac))}
 .stmsg{margin-top:6px}
+
+.clcard{background:linear-gradient(135deg,rgba(80,200,150,.16),rgba(255,138,92,.12));border:1px solid rgba(80,200,150,.45)}
+.clpulse{color:#ff4d4d;font-size:30px;animation:clp 1s infinite} @keyframes clp{50%{opacity:.25}}
 </style>
 </head>
 <body>
@@ -1149,7 +1152,7 @@ const Pocket = {
   supported() { return !!(NATIVE && NATIVE.kokoroSupported && NATIVE.kokoroSupported()); },
   onInstall(ev) {
     this.inst = ev;
-    if (ev.stage === 'done') { this.refresh(); toast('Narrator voices are ready 🎧'); renderLibrary(); }
+    if (ev.stage === 'done') { this.refresh(); toast('Voice cloner ready 🎤 Tap ▶ on your cloned voice to hear it.', 4000); renderLibrary(); if ($('#narrList')?.offsetParent) renderNarrators(); }
     if (ev.stage === 'error') toast('Download failed: ' + (ev.msg || ''), 5000);
     $$('.pocketInst').forEach(el => renderPocketInstall(el));
   },
@@ -1562,23 +1565,97 @@ const STV = {
   },
 };
 
+/* ---------------- Voice cloning (Pocket TTS): copy a real voice from a 10–30 s recording ---------------- */
+const Clones = {
+  is: id => typeof id === 'string' && id.startsWith('clone:'),
+  all() { return LS.get('clones', []); },
+  find(id) { return this.all().find(c => c.id === id); },
+  save(l) { LS.set('clones', l); },
+  get(id) {
+    const c = this.find(id) || { id, name: 'Cloned voice' };
+    return { id: c.id, name: c.name, emoji: '🎤', desc: 'Cloned voice · made on your phone (slower than AI voices)', voice: 'pk_' + c.id.slice(6), clone: true };
+  },
+  list() { return this.all().map(c => this.get(c.id)); },
+  del(id) {
+    const c = this.find(id); if (!c) return;
+    NATIVE?.voiceDelete?.('pk_' + id.slice(6));
+    this.save(this.all().filter(x => x.id !== id));
+    if (S.narrator === id) { S.narrator = Phone.best(); saveSettings(); }
+  },
+  rec: null,
+  // the "Clone a voice" sheet
+  sheet() {
+    openSheet(`<h4>🎤 Clone a voice</h4>
+      <p class="muted" style="margin-top:0">BookTalk can copy someone's voice from a short recording and read books in it. Everything stays on your phone.</p>
+      <div class="card small" style="line-height:1.5">For the best copy:<br>• <b>10–30 seconds</b> of one person talking<br>• a quiet room, no music or other voices<br>• natural, expressive speech, like reading a story aloud</div>
+      <div class="small muted" style="margin:10px 2px">Only clone your own voice, or someone who has agreed to it.</div>
+      <div id="clRec" style="display:none;text-align:center;margin:10px 0"><div class="clpulse">●</div><div id="clTime" style="font-size:28px;font-weight:700">0:00</div><div class="small muted">Read something aloud in your normal voice…</div><button class="btn pri" id="clStop" style="margin-top:10px">■ Stop recording</button></div>
+      <div id="clBtns" class="row" style="gap:10px;margin-top:4px"><button class="btn pri grow" id="clRecord">🎙️ Record now</button><button class="btn grow" id="clFile">📁 Choose a recording</button></div>
+      <input type="file" id="clFileIn" accept="audio/*,video/*" style="display:none">`, sh => {
+      $('#clFile', sh).onclick = () => $('#clFileIn', sh).click();
+      $('#clFileIn', sh).onchange = e => { const f = e.target.files[0]; if (f) this.fromBlob(f, f.name.replace(/\.[^.]+$/, '')); };
+      $('#clRecord', sh).onclick = () => this.record();
+      $('#clStop', sh).onclick = () => this.rec?.stop();
+    });
+  },
+  async record() {
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } }); }
+    catch (e) { toast('BookTalk needs the microphone to record. Allow it in your phone\'s app settings, or choose a recording instead.', 5000); return; }
+    const chunks = [], mr = new MediaRecorder(stream); this.rec = mr;
+    $('#clBtns').style.display = 'none'; $('#clRec').style.display = '';
+    const t0 = Date.now(), tick = setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000); if ($('#clTime')) $('#clTime').textContent = `0:${String(s).padStart(2, '0')}`;
+      if (s >= 30) mr.stop();
+    }, 250);
+    mr.ondataavailable = e => chunks.push(e.data);
+    mr.onstop = () => { clearInterval(tick); stream.getTracks().forEach(t => t.stop()); this.rec = null; this.fromBlob(new Blob(chunks, { type: mr.mimeType }), ''); };
+    mr.start();
+  },
+  async fromBlob(blob, suggested) {
+    let r;
+    try { busy('Getting the voice ready', 'Reading the recording…'); r = await toWav(blob, 25); }
+    catch (e) { busy(false); toast('Couldn\'t read that recording. Try a different file (MP3, M4A or WAV work best).', 5000); return; }
+    busy(false);
+    if (r.seconds < 5) { toast('That recording is too short. Use at least 10 seconds of speech.', 4500); return; }
+    const url = URL.createObjectURL(r.wav);
+    openSheet(`<h4>Name this voice</h4>
+      <div class="row" style="gap:10px"><button class="iconbtn" id="clPlay">${ICON.play}</button><div class="grow small muted">${Math.round(r.seconds)} seconds of recording${r.seconds < 10 ? ' (short: a longer one copies better)' : ''}</div></div>
+      <input id="clName" maxlength="40" placeholder="e.g. Grandad, My voice" value="${esc(suggested || '')}" style="margin-top:12px">
+      <button class="btn pri block" id="clSave" style="margin-top:12px">Save voice</button>`, sh => {
+      let au = null;
+      $('#clPlay', sh).onclick = () => { if (au) { au.pause(); au = null; $('#clPlay', sh).innerHTML = ICON.play; return; } au = new Audio(url); au.onended = () => { au = null; $('#clPlay', sh).innerHTML = ICON.play; }; au.play(); $('#clPlay', sh).innerHTML = ICON.pause; };
+      $('#clSave', sh).onclick = async () => {
+        const name = $('#clName', sh).value.trim() || 'My cloned voice', id = 'clone:' + uid();
+        if (!NATIVE?.voiceSave || !NATIVE.voiceSave('pk_' + id.slice(6), await blobToB64(r.wav))) { toast('Couldn\'t save the voice on this phone'); return; }
+        this.save([...this.all(), { id, name, made: Date.now(), secs: Math.round(r.seconds) }]);
+        au?.pause(); closeSheet(); renderNarrators();
+        if (!Pocket.refresh()) { voicePackSheet(true); return; }
+        toast(`🎤 “${name}” saved. Tap ▶ to hear it.`, 4000);
+      };
+    });
+  },
+};
+
 const presetUrl = path => 'https://huggingface.co/kyutai/tts-voices/resolve/main/' + path;
 const Narr = {
-  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (STV.is(id) && STV.on()) || (AI && PRESETS.some(x => x[0] === id)); },
+  valid(id) { return CV.is(id) ? !!CV.get(id) && !CV.is(CV.get(id).base) : Phone.is(id) || (STV.is(id) && STV.on()) || (Clones.is(id) && !!Clones.find(id)) || (AI && PRESETS.some(x => x[0] === id)); },
   get(id) {
     if (!this.valid(id)) id = this.valid(S.narrator) ? S.narrator : AI ? PRESETS[0][0] : Phone.best();
     if (CV.is(id)) { const c = CV.get(id), b = this.get(c.base), spec = b.ai ? blendSpec(c.tune) : ''; return { ...b, id: c.id, name: c.name, emoji: c.emoji || '🎛️', desc: 'Your voice · made from ' + (spec ? 'a blend of AI voices' : b.name), custom: true, base: b.id, baseName: spec ? 'a blend of AI voices' : b.name, tune: c.tune, tts: spec ? 'st:' + spec : b.tts }; }
     if (STV.is(id)) return STV.get(id);
+    if (Clones.is(id)) return Clones.get(id);
     if (Phone.is(id)) return Phone.get(id);
     const p = PRESETS.find(x => x[0] === id); return { id: p[0], name: p[1], desc: p[2], path: p[3], voice: 'pk_' + p[0] };
   },
   forBook(meta) { return this.get(meta && this.valid(meta.narrator) ? meta.narrator : S.narrator); },
-  has(id) { if (CV.is(id)) return this.has(this.get(id).base); if (STV.is(id)) return STV.installed(); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
+  has(id) { if (CV.is(id)) return this.has(this.get(id).base); if (STV.is(id)) return STV.installed(); if (Clones.is(id)) return !!NATIVE?.voiceHas?.(Clones.get(id).voice); return Phone.is(id) || !!(NATIVE?.voiceHas && NATIVE.voiceHas('pk_' + id)); },
   loading: new Map(),
   // Make sure the narrator's sample is on the phone (downloads ~1 MB the first time)
   ensure(id) {
     if (CV.is(id)) return this.ensure(this.get(id).base);
     if (STV.is(id)) return STV.installed() ? Promise.resolve(true) : (STV.need(), Promise.reject(new Error('The AI voices need downloading first')));
+    if (Clones.is(id)) return this.has(id) ? Promise.resolve(true) : Promise.reject(new Error('the recording for this voice is missing'));
     if (this.has(id)) return Promise.resolve(true);
     if (this.loading.has(id)) return this.loading.get(id);
     const n = this.get(id);
@@ -1630,6 +1707,11 @@ const Narr = {
         <button class="iconbtn" data-hear="${path}" style="width:40px;height:40px">${ICON.play}</button>
         <button class="grow" data-pick="${id}" style="text-align:left;padding:6px 4px"><b>${n}${id === current ? ' ✓' : ''}</b><div class="small muted">${d}</div></button></div>`).join('')}
       <p class="small muted">Voices from Kyutai's open voice collection, recreated on this phone: free, offline and unlimited.</p>`; },
+  cloneRows(current, pickAttr) {
+    return Clones.list().map(v => `<div class="opt ${v.id === current ? 'on' : ''}" style="padding:8px 2px">
+        <button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button>
+        <button class="grow" ${pickAttr}="${esc(v.id)}" style="text-align:left;padding:6px 4px"><b>🎤 ${esc(v.name)}${v.id === current ? ' ✓' : ''}</b><div class="small muted">${esc(v.desc)}</div></button></div>`).join('');
+  },
   myRows(current, pickAttr) {
     return CV.all().map(c => { const v = this.get(c.id); return `<div class="opt ${v.id === current ? 'on' : ''}" style="padding:8px 2px">
         <button class="iconbtn" data-phear="${esc(v.id)}" style="width:40px;height:40px">${ICON.play}</button>
@@ -1644,6 +1726,7 @@ const Narr = {
       ${mine}
       ${AI ? `<div class="sect"><b>📱 Phone voices</b><div class="small muted">The same voices as BibleTalk. Start instantly and flow with no pauses.</div></div>` : (noCustom || !CV.all().length ? '' : `<div class="sect"><b>📱 Phone voices</b></div>`)}
       ${STV.on() ? `<div class="sect"><b>🤖 AI narrators</b><div class="small muted">Natural voices made on your phone.</div></div>${STV.installed() ? this.aiRows(current, 'data-pick') : '<div class="stcardwrap"></div>'}` : ''}
+      ${Clones.all().length ? `<div class="sect" style="margin-top:12px"><b>🎤 Cloned voices</b></div>${this.cloneRows(current, 'data-pick')}` : ''}
       ${STV.on() ? `<div class="sect" style="margin-top:12px"><b>📱 Phone voices</b></div>` : ''}
       ${this.phoneRows(current, 'data-pick')}
       <button class="btn ghost block" data-more style="margin:6px 0 4px">Get more phone voices</button>
@@ -2970,6 +3053,7 @@ function renderPlayState() {
 }
 function setStatus(state) {
   let idle = '<span class="dot"></span> Get audio ready';
+  $('#chEngine').style.display = P.meta && !P.isPhone() ? '' : 'none';
   if (P.meta && P.isPhone()) idle = '<span class="dot g"></span> 📱 Instant';
   else if (!state) {
     if (Prep.job?.state === 'running') idle = `<span class="dot l"></span> Getting ready ${Math.floor(Prep.job.done / Math.max(1, Prep.job.total) * 100)}%`;
@@ -3049,6 +3133,12 @@ function renderNarrators() {
   $('#narrList').innerHTML = `<div class="card tunercard" style="margin-bottom:14px">
       <div class="row"><div style="font-size:34px">🎛️</div><div class="grow"><b style="font-size:17px">Voice Tuner</b> ${Pro.badge()}<div class="small muted">Shape any voice: emotions, pitch, speed, pauses, rooms and effects. Save it as your own narrator.</div></div></div>
       <div class="row" style="gap:8px;margin-top:12px"><button class="btn pri grow" id="nvTune">Create a voice</button><button class="btn" id="nvImport">Import</button></div></div>
+    <div class="card row clcard" style="margin-bottom:14px"><div style="font-size:30px">🎤</div><div class="grow"><b>Clone a voice</b><div class="small muted">Copy a real voice from a short recording</div></div><button class="btn" id="nvClone">Start</button></div>
+    ${Clones.all().length ? `<div class="sect"><b>🎤 Cloned voices</b><div class="small muted">Made on your phone, slower than AI voices. Use “Get audio ready” for gap-free listening.</div></div>` + Clones.list().map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
+      <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
+      <div class="grow"><b>🎤 ${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">Cloned voice</div>
+        <div class="row" style="gap:14px;margin-top:4px"><button class="small" data-read="${esc(v.id)}" style="color:var(--ac2)">Hear it read</button><button class="small" data-cldel="${esc(v.id)}" style="color:var(--tx3)">Delete</button></div></div>
+      <button class="btn ${v.id === cur ? 'pri' : ''}" data-use="${esc(v.id)}">${v.id === cur ? '✓' : 'Use'}</button></div>`).join('') : ''}
     ${mine.length ? `<div class="sect"><b>🎛️ My voices</b></div>` + mine.map(v => `<div class="card row" style="margin-bottom:10px;padding:10px 12px;${v.id === cur ? 'border-color:var(--ac)' : ''}">
       <button class="iconbtn" data-phear="${esc(v.id)}" title="Hear this voice">${ICON.play}</button>
       <div class="grow"><b>${v.emoji} ${esc(v.name)}</b>${v.id === cur ? ' <span class="small" style="color:var(--ac2)">· default</span>' : ''}<div class="small muted">Made from ${esc(v.baseName)}</div>
@@ -3081,6 +3171,8 @@ function renderNarrators() {
   $('#nvMore').onclick = () => Phone.moreVoices();
   $('#nvTune').onclick = () => Tuner.open({ base: CV.is(S.narrator) ? CV.get(S.narrator).base : S.narrator });
   $('#nvImport').onclick = () => importVoiceSheet();
+  $('#nvClone').onclick = () => Clones.sheet();
+  $$('#narrList [data-cldel]').forEach(b => b.onclick = () => { const v = Clones.get(b.dataset.cldel); openSheet(`<h4>Delete “${esc(v.name)}”?</h4><p class="muted" style="margin-top:0">The recording is removed from your phone. Books using this voice will switch to a phone voice.</p><div class="row" style="gap:10px"><button class="btn grow" onclick="closeSheet()">Keep</button><button class="btn grow" id="clDelYes" style="background:#5a1f1f;color:#fff">Delete</button></div>`, sh => $('#clDelYes', sh).onclick = () => { Clones.del(v.id); closeSheet(); renderNarrators(); toast('Voice deleted'); }); });
   $$('#narrList [data-tedit]').forEach(b => b.onclick = () => Tuner.open({ edit: b.dataset.tedit }));
   $$('#narrList [data-tshare]').forEach(b => b.onclick = () => shareVoice(b.dataset.tshare));
   $$('#narrList [data-read]').forEach(b => b.onclick = () => Preview.run(b.dataset.read, b, previewMood));
@@ -3101,17 +3193,17 @@ function renderPocketInstall(el) {
   if (!Pocket.supported()) { el.innerHTML = '<p class="small muted">The narrator voices need a 64-bit phone, which this one isn\'t.</p>'; return; }
   Pocket.refresh();
   const ev = Pocket.inst, busy = NATIVE.packInstalling('pocket') || (ev && (ev.stage === 'download' || ev.stage === 'extract'));
-  if (Pocket.ready) { el.innerHTML = '<div class="small" style="color:var(--ok)">✓ Narrator voices installed</div>'; return; }
+  if (Pocket.ready) { el.innerHTML = '<div class="small" style="color:var(--ok)">✓ Voice cloner installed</div>'; return; }
   if (busy && ev) {
     const pct = Math.max(0, ev.pct);
     el.innerHTML = `<div class="small" style="margin:6px 0">${ev.stage === 'download' ? `Downloading… ${ev.pct >= 0 ? pct + '%' : ''} ${ev.msg ? '(' + ev.msg + ' MB)' : ''}` : `Unpacking… ${pct}%`}</div><div class="prog"><i style="width:${pct}%"></i></div>`;
     return;
   }
-  el.innerHTML = `<button class="btn pri block" data-getpocket>Download narrator voices (98 MB)</button><p class="small muted" style="margin-bottom:0">One time only, best on Wi-Fi. Uses about 195 MB of storage.</p>`;
+  el.innerHTML = `<button class="btn pri block" data-getpocket>Download the voice cloner (98 MB)</button><p class="small muted" style="margin-bottom:0">One time only, best on Wi-Fi. Uses about 195 MB of storage.</p>`;
   el.querySelector('[data-getpocket]').onclick = () => { NATIVE.packInstall('pocket'); Pocket.inst = { pack: 'pocket', stage: 'download', pct: 0 }; $$('.pocketInst').forEach(x => renderPocketInstall(x)); };
 }
-function voicePackSheet() {
-  openSheet(`<h4>Get the narrator voices</h4><p class="muted" style="margin-top:0">BookTalk's AI narrators are made right here on your phone, free and with no limits. They need a one-time download first.</p><div class="pocketInst"></div>
+function voicePackSheet(afterClone) {
+  openSheet(`<h4>${afterClone ? 'One more step: the voice cloner' : 'Get the voice cloner'}</h4><p class="muted" style="margin-top:0">Cloned voices are made right here on your phone by Pocket TTS, free and offline. It needs a one-time download first. On most phones it's a little slower than reading speed, so use <b>Get audio ready</b> before you listen.</p><div class="pocketInst"></div>
     <div class="card" style="margin-top:14px"><b>📱 Or use your phone's voices</b><div class="small muted" style="margin:4px 0 10px">The same voices as BibleTalk. No download, start instantly, no pauses.</div><button class="btn block" id="vpPhone">Use phone voices</button></div>`, sh => {
     $$('.pocketInst', sh).forEach(el => renderPocketInstall(el));
     $('#vpPhone', sh).onclick = async () => {
